@@ -3436,6 +3436,25 @@ CMenuManager::Process(void)
 	InitialiseChangedLanguageSettings();
 
 	if (m_bMenuActive) {
+#ifdef RTGI
+		// dev/testing: when rtgi_autoload.txt exists next to the exe
+		// (content: slot number 1-8), load that save automatically so
+		// automated runs can reach gameplay without input
+		static bool rtgiAutoloadTried = false;
+		if (!rtgiAutoloadTried && m_bGameNotLoaded) {
+			rtgiAutoloadTried = true;
+			if (FILE *f = fopen("rtgi_autoload.txt", "r")) {
+				int slot = 0;
+				fscanf(f, "%d", &slot);
+				fclose(f);
+				if (slot >= 1 && slot <= 8 && CheckSlotDataValid(slot - 1)) {
+					m_nCurrSaveSlot = slot - 1;
+					DoSettingsBeforeStartingAGame();
+					m_bWantToLoad = true;
+				}
+			}
+		}
+#endif
 		UserInput();
 		ProcessFileActions();
 		DMAudio.Service();

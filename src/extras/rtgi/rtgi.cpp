@@ -19,6 +19,9 @@
 #include "rtgi.h"
 #include "skeleton.h"
 #include "debugmenu.h"
+#include "Timer.h"
+#include "Frontend.h"
+#include "Draw.h"
 
 namespace RayTracedGI {
 
@@ -54,6 +57,52 @@ static uint32 frameCounter;
 // what the debug menu did to the toggles in between
 static bool gFrameSubmitted;
 
+// dev/testing: dump the backbuffer every N frames (0 = off; config
+// "shotframes=N"). OS screen capture can't see the fullscreen GL frontbuffer,
+// so automated runs read these instead.
+static int32 gnShotFrames;
+
+static void
+screenshotDump(void)
+{
+	if(gnShotFrames <= 0 || (frameCounter % gnShotFrames) != 0 || frameCounter == 0)
+		return;
+
+	GLint vp[4];
+	glGetIntegerv(GL_VIEWPORT, vp);
+	int w = vp[2] & ~3, h = vp[3];	// row-align width to 4 for BMP
+	uint8 *pixels = (uint8*)malloc(w*h*3);
+	if(pixels == nil)
+		return;
+	glPixelStorei(GL_PACK_ALIGNMENT, 1);
+	glReadPixels(vp[0], vp[1], w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels);
+
+	static int shotIndex;
+	char name[64];
+	sprintf(name, "rtgi_shot_%d.bmp", shotIndex % 4);
+	shotIndex++;
+
+	// minimal BMP24; GL's bottom-up rows match BMP's layout directly
+	FILE *f = fopen(name, "wb");
+	if(f){
+		int imgSize = w*h*3;
+		uint8 fileHdr[14] = { 'B','M', 0,0,0,0, 0,0, 0,0, 54,0,0,0 };
+		uint32 fileSize = 54 + imgSize;
+		memcpy(fileHdr+2, &fileSize, 4);
+		uint8 infoHdr[40] = { 40,0,0,0 };
+		memcpy(infoHdr+4, &w, 4);
+		memcpy(infoHdr+8, &h, 4);
+		infoHdr[12] = 1;	// planes
+		infoHdr[14] = 24;	// bpp
+		memcpy(infoHdr+20, &imgSize, 4);
+		fwrite(fileHdr, 1, 14, f);
+		fwrite(infoHdr, 1, 40, f);
+		fwrite(pixels, 1, imgSize, f);
+		fclose(f);
+	}
+	free(pixels);
+}
+
 // --- debug blit ---------------------------------------------------------------
 
 static GLuint blitProgram;
@@ -74,10 +123,14 @@ static const char *blitFragSrc =
 "in vec2 v_uv;\n"
 "out vec4 color;\n"
 "uniform sampler2D tex;\n"
-"uniform int u_mode;\n"	// 0 = rgb, 1 = replicate red (AO)
+"uniform int u_mode;\n"	// 0 = rgb, 1 = replicate red, 2 = normals 0.5+0.5, 3 = depth vis
 "void main() {\n"
 "	vec4 t = texture(tex, v_uv);\n"
-"	color = vec4(u_mode == 1 ? vec3(t.r) : t.rgb, 1.0);\n"
+"	vec3 c = t.rgb;\n"
+"	if(u_mode == 1) c = vec3(t.r);\n"
+"	else if(u_mode == 2) c = t.rgb*0.5 + 0.5;\n"
+"	else if(u_mode == 3) c = vec3(exp(-t.r*0.01));\n"
+"	color = vec4(c, 1.0);\n"
 "}\n";
 
 static GLuint
@@ -130,11 +183,37 @@ blitDestroy(void)
 
 // --- lifecycle ----------------------------------------------------------------
 
+// dev/testing: optional rtgi_config.txt next to the exe overrides the toggles
+// (one "key=value" per line) so automated runs can A/B without the debug menu
+static void
+readConfigFile(void)
+{
+	FILE *f = fopen("rtgi_config.txt", "r");
+	if(f == nil)
+		return;
+	char line[128];
+	while(fgets(line, sizeof(line), f)){
+		int ival; float fval;
+		if(sscanf(line, "view=%d", &ival) == 1) gnDebugView = ival;
+		else if(sscanf(line, "enabled=%d", &ival) == 1) gbRayTracedGI = ival != 0;
+		else if(sscanf(line, "ao=%d", &ival) == 1) gbAOEnable = ival != 0;
+		else if(sscanf(line, "aostrength=%f", &fval) == 1) gfAOStrength = fval;
+		else if(sscanf(line, "aoradius=%f", &fval) == 1) gfAORadius = fval;
+		else if(sscanf(line, "aorays=%d", &ival) == 1) gnAORays = ival;
+		else if(sscanf(line, "shotframes=%d", &ival) == 1) gnShotFrames = ival;
+	}
+	fclose(f);
+	RtgiLog("RTGI: config file applied (view=%d ao=%d strength=%.2f)\n",
+		gnDebugView, gbAOEnable, gfAOStrength);
+}
+
 void
 Initialise(void)
 {
 	if(initialised)
 		return;
+
+	readConfigFile();
 
 	if(!InteropLoadGL())
 		goto fail;
@@ -288,7 +367,9 @@ RenderFrame(void)
 	vkEndCommandBuffer(gVk.cmdBuf);
 
 	if(traced && (frameCounter % 300) == 0)
-		RtgiLog("RTGI: %u TLAS instances, %d BLASes\n", TlasInstanceCount(), BlasCount());
+		RtgiLog("RTGI: %u TLAS instances, %d BLASes (paused=%d menu=%d fade=%d)\n",
+			TlasInstanceCount(), BlasCount(),
+			CTimer::GetIsPaused(), FrontEndMenuManager.m_bMenuActive, CDraw::FadeValue);
 
 	VkSemaphore waitSems[2];
 	VkPipelineStageFlags waitStages[2];
@@ -349,12 +430,18 @@ DebugRender(void)
 		glDisable(GL_BLEND);
 		// bottom-right quarter of the screen
 		glViewport(prevViewport[0] + prevViewport[2]/2, prevViewport[1], prevViewport[2]/2, prevViewport[3]/2);
+		GLuint tex = gInterop.rtOutput.glTexture;
+		int mode = 0;
+		switch(gnDebugView){
+		case DEBUGVIEW_AO: tex = gInterop.aoOutput.glTexture; mode = 1; break;
+		case DEBUGVIEW_GB_NORMAL: tex = gInterop.gbNormal.glTexture; mode = 2; break;
+		case DEBUGVIEW_GB_DEPTH: tex = gInterop.gbDepth.glTexture; mode = 3; break;
+		}
 		glUseProgram(blitProgram);
 		glBindVertexArray(blitVAO);
-		glBindTexture(GL_TEXTURE_2D, gnDebugView == DEBUGVIEW_AO ?
-			gInterop.aoOutput.glTexture : gInterop.rtOutput.glTexture);
+		glBindTexture(GL_TEXTURE_2D, tex);
 		glUniform1i(glGetUniformLocation(blitProgram, "tex"), 0);
-		glUniform1i(glGetUniformLocation(blitProgram, "u_mode"), gnDebugView == DEBUGVIEW_AO ? 1 : 0);
+		glUniform1i(glGetUniformLocation(blitProgram, "u_mode"), mode);
 		glDrawArrays(GL_TRIANGLES, 0, 3);
 
 		glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
@@ -369,12 +456,14 @@ DebugRender(void)
 	// GL has now consumed this frame's output; let VK reuse it
 	InteropSignalGlDone();
 	gFrameSubmitted = false;
+
+	screenshotDump();
 }
 
 void
 AddDebugMenuEntries(void)
 {
-	static const char *debugViews[] = { "Off", "Interop", "RT Normals", "RT Depth", "RT Instances", "AO" };
+	static const char *debugViews[] = { "Off", "Interop", "RT Normals", "RT Depth", "RT Instances", "AO", "GB Normal", "GB Depth" };
 	DebugMenuAddVarBool8("RTGI", "Ray traced GI", (int8_t*)&gbRayTracedGI, nil);
 	DebugMenuAddVar("RTGI", "Debug view", &gnDebugView, nil, 1, 0, DEBUGVIEW_MAX-1, debugViews);
 	DebugMenuAddVarBool8("RTGI", "RT ambient occlusion", (int8_t*)&gbAOEnable, nil);

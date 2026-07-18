@@ -14,6 +14,8 @@ enum eDebugView {
 	DEBUGVIEW_RT_DEPTH,	// primary rays: depth
 	DEBUGVIEW_RT_INSTANCES,	// primary rays: instance id colors
 	DEBUGVIEW_AO,		// ray traced ambient occlusion
+	DEBUGVIEW_GB_NORMAL,	// G-buffer world normals
+	DEBUGVIEW_GB_DEPTH,	// G-buffer linear depth
 	DEBUGVIEW_MAX
 };
 
