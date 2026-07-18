@@ -14,6 +14,7 @@
 #include <rwcore.h>
 #include "main.h"
 #include "Timecycle.h"
+#include "PointLights.h"
 
 #include "shaders/obj/primary_comp.inc"
 #include "shaders/obj/ao_comp.inc"
@@ -117,6 +118,14 @@ static GpuImage gGiRaw;
 static GpuImage gGiAccum[2];
 static GpuImage gDepthHist[2];
 static GpuImage gAtrousScratch;
+
+// game point lights snapshot for the GI pass
+struct GpuPointLight
+{
+	float posRadius[4];
+	float color[4];
+};
+static GpuBuffer gLightBuf;
 static int gAccumIndex;
 static bool gGiImagesInitialised;	// UNDEFINED->GENERAL done
 static float gPrevCam[16];		// pos/right/up/fwd with vw in w
@@ -280,22 +289,23 @@ PassesInit(void)
 	// --- GI pass ---------------------------------------------------------
 
 	{
-	VkDescriptorSetLayoutBinding b[5] = {};
-	VkDescriptorType types[5] = {
+	VkDescriptorSetLayoutBinding b[6] = {};
+	VkDescriptorType types[6] = {
 		VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 	};
-	for(int i = 0; i < 5; i++){
+	for(int i = 0; i < 6; i++){
 		b[i].binding = i;
 		b[i].descriptorType = types[i];
 		b[i].descriptorCount = 1;
 		b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 	}
 	VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-	li.bindingCount = 5;
+	li.bindingCount = 6;
 	li.pBindings = b;
 	if(vkCreateDescriptorSetLayout(gVk.device, &li, nullptr, &gGiSetLayout) != VK_SUCCESS)
 		return false;
@@ -426,6 +436,7 @@ PassesInit(void)
 void
 PassesShutdown(void)
 {
+	BufferDestroy(&gLightBuf);
 	ImageDestroy(&gAtrousScratch);
 	if(gAtrousPipeline) vkDestroyPipeline(gVk.device, gAtrousPipeline, nullptr);
 	if(gAtrousPipeLayout) vkDestroyPipelineLayout(gVk.device, gAtrousPipeLayout, nullptr);
@@ -638,6 +649,32 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 		resetHistory = true;
 	}
 
+	// point light snapshot for this frame
+	uint32_t numLights = 0;
+	{
+		if(gLightBuf.buf == nil)
+			BufferCreate(&gLightBuf, NUMPOINTLIGHTS * sizeof(GpuPointLight),
+				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+		GpuPointLight *dst = (GpuPointLight*)gLightBuf.mapped;
+		if(dst){
+			for(int i = 0; i < CPointLights::NumLights && numLights < NUMPOINTLIGHTS; i++){
+				CRegisteredPointLight *l = &CPointLights::aLights[i];
+				if(l->type != CPointLights::LIGHT_POINT &&
+				   l->type != CPointLights::LIGHT_DIRECTIONAL)
+					continue;
+				GpuPointLight *g = &dst[numLights++];
+				g->posRadius[0] = l->coors.x;
+				g->posRadius[1] = l->coors.y;
+				g->posRadius[2] = l->coors.z;
+				g->posRadius[3] = l->radius;
+				g->color[0] = l->red;
+				g->color[1] = l->green;
+				g->color[2] = l->blue;
+				g->color[3] = 0.0f;
+			}
+		}
+	}
+
 	// GI descriptors
 	{
 	VkAccelerationStructureKHR tlas = TlasHandle();
@@ -649,9 +686,10 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 	VkDescriptorImageInfo depthInfo = { gInterop.sampler, gInterop.gbDepth.view, VK_IMAGE_LAYOUT_GENERAL };
 	GpuBuffer *records = BlasRecordBuffer();
 	VkDescriptorBufferInfo bufInfo = { records->buf, 0, VK_WHOLE_SIZE };
+	VkDescriptorBufferInfo lightInfo = { gLightBuf.buf, 0, VK_WHOLE_SIZE };
 
-	VkWriteDescriptorSet writes[5] = {};
-	for(int i = 0; i < 5; i++){
+	VkWriteDescriptorSet writes[6] = {};
+	for(int i = 0; i < 6; i++){
 		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[i].dstSet = gGiDescSet;
 		writes[i].dstBinding = i;
@@ -667,7 +705,9 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 	writes[3].pImageInfo = &depthInfo;
 	writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	writes[4].pBufferInfo = &bufInfo;
-	vkUpdateDescriptorSets(gVk.device, 5, writes, 0, nullptr);
+	writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	writes[5].pBufferInfo = &lightInfo;
+	vkUpdateDescriptorSets(gVk.device, 6, writes, 0, nullptr);
 	}
 
 	GiPushConstants gpc = {};
@@ -686,6 +726,7 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 	gpc.skyBottom[2] = CTimeCycle::GetSkyBottomBlue()/255.0f;
 	gpc.size[0] = w; gpc.size[1] = h;
 	gpc.frame = frame;
+	gpc.pad0 = numLights;
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gGiPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gGiPipeLayout, 0, 1, &gGiDescSet, 0, nullptr);

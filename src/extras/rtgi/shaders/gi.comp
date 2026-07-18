@@ -26,6 +26,12 @@ struct GeomRecord {
 };
 layout(binding = 4, std430) readonly buffer Records { GeomRecord records[]; };
 
+struct PointLight {
+	vec4 posRadius;	// xyz, w = radius
+	vec4 color;	// rgb
+};
+layout(binding = 5, std430) readonly buffer Lights { PointLight lights[]; };
+
 layout(push_constant) uniform PC {
 	vec4 camPos;
 	vec4 camRight;	// w = viewWindow.x
@@ -37,7 +43,7 @@ layout(push_constant) uniform PC {
 	vec4 skyBottom;	// rgb
 	uvec2 size;
 	uint frame;
-	uint pad0;
+	uint numLights;
 } pc;
 
 uint pcg(inout uint state)
@@ -154,7 +160,32 @@ void main()
 		// crude sky term at the hit: sky radiance weighted by upness
 		vec3 skyAmb = skyRadiance(hitN) * 0.35;
 
-		radiance = albedo * (direct + skyAmb);
+		// point lights (street lamps, headlights, explosions): next-event
+		// estimation with one random light
+		vec3 pointLight = vec3(0.0);
+		if(pc.numLights > 0u){
+			uint li = pcg(state) % pc.numLights;
+			PointLight L = lights[li];
+			vec3 toL = L.posRadius.xyz - hitPos;
+			float d = length(toL);
+			if(d < L.posRadius.w && d > 0.01){
+				toL /= d;
+				float ndl = dot(hitN, toL);
+				if(ndl > 0.0){
+					rayQueryEXT srq;
+					rayQueryInitializeEXT(srq, tlas,
+						gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+						0xFFu, hitPos + hitN*0.05, 0.02, toL, d - 0.1);
+					while(rayQueryProceedEXT(srq)) { }
+					if(rayQueryGetIntersectionTypeEXT(srq, true) == gl_RayQueryCommittedIntersectionNoneEXT){
+						float falloff = 1.0 - d/L.posRadius.w;
+						pointLight = L.color.rgb * (ndl * falloff * float(pc.numLights));
+					}
+				}
+			}
+		}
+
+		radiance = albedo * (direct + skyAmb + pointLight);
 	}else{
 		// sky visible from the surface: this is the sky-light term
 		radiance = skyRadiance(dir);
