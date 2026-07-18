@@ -47,7 +47,8 @@ void main()
 	vec2 uv = (vec2(px) + 0.5) / vec2(pc.size);
 	float u = uv.x*2.0 - 1.0;
 	float v = 1.0 - uv.y*2.0;
-	vec3 dir = normalize(pc.camFwd.xyz + pc.camRight.xyz*(u*pc.camRight.w) + pc.camUp.xyz*(v*pc.camUp.w));
+	// RW camera space: right vector points screen-left, hence the negation
+	vec3 dir = normalize(pc.camFwd.xyz - pc.camRight.xyz*(u*pc.camRight.w) + pc.camUp.xyz*(v*pc.camUp.w));
 
 	rayQueryEXT rq;
 	rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, 0xFF, pc.camPos.xyz, 0.1, dir, 3000.0);
