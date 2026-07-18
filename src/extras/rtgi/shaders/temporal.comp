@@ -1,0 +1,69 @@
+#version 460
+
+// Temporal accumulation for the GI buffer: reproject the previous frame's
+// accumulation with the previous camera, validate by depth, blend.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0, rgba16f) uniform image2D giRaw;
+layout(binding = 1) uniform sampler2D prevAccum;
+layout(binding = 2) uniform sampler2D prevDepth;
+layout(binding = 3) uniform sampler2D gbDepth;
+layout(binding = 4, rgba16f) uniform image2D outAccum;
+layout(binding = 5, rgba16f) uniform image2D outShared;	// GL-visible copy
+layout(binding = 6, r32f) uniform image2D outPrevDepth;	// depth for next frame
+
+layout(push_constant) uniform PC {
+	vec4 camPos;
+	vec4 camRight;	// w = viewWindow.x
+	vec4 camUp;	// w = viewWindow.y
+	vec4 camFwd;
+	vec4 prevCamPos;
+	vec4 prevCamRight;
+	vec4 prevCamUp;
+	vec4 prevCamFwd;
+	uvec2 size;
+	uint frame;
+	uint reset;	// 1 = drop history (scene load, camera cut)
+} pc;
+
+void main()
+{
+	uvec2 px = gl_GlobalInvocationID.xy;
+	if(px.x >= pc.size.x || px.y >= pc.size.y)
+		return;
+
+	vec2 uv = (vec2(px) + 0.5) / vec2(pc.size);
+	float depth = texelFetch(gbDepth, ivec2(px), 0).r;
+	vec3 cur = imageLoad(giRaw, ivec2(px)).rgb;
+
+	vec3 result = cur;
+	if(pc.reset == 0u && depth > 0.0){
+		// world position of this pixel
+		float u = uv.x*2.0 - 1.0;
+		float v = 1.0 - uv.y*2.0;
+		vec3 viewRay = pc.camFwd.xyz - pc.camRight.xyz*(u*pc.camRight.w) + pc.camUp.xyz*(v*pc.camUp.w);
+		vec3 worldPos = pc.camPos.xyz + viewRay*depth;
+
+		// project into the previous camera
+		vec3 d = worldPos - pc.prevCamPos.xyz;
+		float pz = dot(d, pc.prevCamFwd.xyz);
+		if(pz > 0.1){
+			float pxn = -dot(d, pc.prevCamRight.xyz) / (pz * pc.prevCamRight.w);
+			float pyn = dot(d, pc.prevCamUp.xyz) / (pz * pc.prevCamUp.w);
+			vec2 prevUv = vec2(pxn*0.5 + 0.5, 1.0 - (pyn*0.5 + 0.5));
+			if(all(greaterThan(prevUv, vec2(0.001))) && all(lessThan(prevUv, vec2(0.999)))){
+				float pd = texture(prevDepth, prevUv).r;
+				// depth the reprojected point should have in the old camera
+				if(pd > 0.0 && abs(pd - pz) / pz < 0.05){
+					vec3 hist = texture(prevAccum, prevUv).rgb;
+					result = mix(hist, cur, 0.08);
+				}
+			}
+		}
+	}
+
+	imageStore(outAccum, ivec2(px), vec4(result, 1.0));
+	imageStore(outShared, ivec2(px), vec4(result, 1.0));
+	imageStore(outPrevDepth, ivec2(px), vec4(depth, 0.0, 0.0, 0.0));
+}

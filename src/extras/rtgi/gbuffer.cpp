@@ -27,6 +27,8 @@ static int gWidth, gHeight;
 
 static int32 u_aoTex;
 static int32 u_rtgiParams;
+static int32 u_giTex;
+static int32 u_rtgiGIParams;
 
 #define U(i) (rw::gl3::currentShader->uniformLocations[i])
 
@@ -40,6 +42,8 @@ GbufferInit(int width, int height)
 
 	u_aoTex = registerUniform("u_aoTex");
 	u_rtgiParams = registerUniform("u_rtgiParams");
+	u_giTex = registerUniform("u_giTex");
+	u_rtgiGIParams = registerUniform("u_rtgiGIParams");
 
 	{
 #include "shaders/obj/rtgiGbuf_vert.inc"
@@ -180,11 +184,16 @@ WorldRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 
 	glActiveTexture(GL_TEXTURE3);
 	glBindTexture(GL_TEXTURE_2D, gInterop.aoOutput.glTexture);
+	glActiveTexture(GL_TEXTURE4);
+	glBindTexture(GL_TEXTURE_2D, gInterop.giOutput.glTexture);
 	glActiveTexture(GL_TEXTURE0);
 	glUniform1i(U(u_aoTex), 3);
+	glUniform1i(U(u_giTex), 4);
 	float shadowStrength = gbSunShadows ? (CTimeCycle::GetShadowStrength()/255.0f)*0.55f : 0.0f;
 	float params[4] = { gfAOStrength, 1.0f/gWidth, 1.0f/gHeight, shadowStrength };
 	glUniform4fv(U(u_rtgiParams), 1, params);
+	float giParams[4] = { gbGIEnable ? gfGIBlend : 0.0f, gfGIExposure, 0.0f, 0.0f };
+	glUniform4fv(U(u_rtgiGIParams), 1, giParams);
 
 	InstanceData *inst = header->inst;
 	int32 n = header->numMeshes;

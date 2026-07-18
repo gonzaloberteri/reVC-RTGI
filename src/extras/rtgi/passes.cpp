@@ -17,6 +17,8 @@
 
 #include "shaders/obj/primary_comp.inc"
 #include "shaders/obj/ao_comp.inc"
+#include "shaders/obj/gi_comp.inc"
+#include "shaders/obj/temporal_comp.inc"
 
 namespace RayTracedGI {
 
@@ -56,6 +58,55 @@ static VkDescriptorSetLayout gAoSetLayout;
 static VkPipelineLayout gAoPipeLayout;
 static VkPipeline gAoPipeline;
 static VkDescriptorSet gAoDescSet;
+
+// GI + temporal accumulation
+struct GiPushConstants
+{
+	float camPos[4];
+	float camRight[4];
+	float camUp[4];
+	float camFwd[4];
+	float sunDir[4];
+	float sunColor[4];
+	float skyTop[4];
+	float skyBottom[4];
+	uint32_t size[2];
+	uint32_t frame;
+	uint32_t pad0;
+};
+
+struct TemporalPushConstants
+{
+	float camPos[4];
+	float camRight[4];
+	float camUp[4];
+	float camFwd[4];
+	float prevCamPos[4];
+	float prevCamRight[4];
+	float prevCamUp[4];
+	float prevCamFwd[4];
+	uint32_t size[2];
+	uint32_t frame;
+	uint32_t reset;
+};
+
+static VkDescriptorSetLayout gGiSetLayout;
+static VkPipelineLayout gGiPipeLayout;
+static VkPipeline gGiPipeline;
+static VkDescriptorSet gGiDescSet;
+
+static VkDescriptorSetLayout gTemporalSetLayout;
+static VkPipelineLayout gTemporalPipeLayout;
+static VkPipeline gTemporalPipeline;
+static VkDescriptorSet gTemporalDescSet;
+
+static GpuImage gGiRaw;
+static GpuImage gGiAccum[2];
+static GpuImage gDepthHist[2];
+static int gAccumIndex;
+static bool gGiImagesInitialised;	// UNDEFINED->GENERAL done
+static float gPrevCam[16];		// pos/right/up/fwd with vw in w
+static bool gHavePrevCam;
 
 static VkPipeline
 createComputePipeline(const uint32_t *code, size_t codeSize, VkPipelineLayout layout)
@@ -135,13 +186,13 @@ PassesInit(void)
 	}
 
 	VkDescriptorPoolSize poolSizes[4] = {
-		{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 4 },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4 },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 },
-		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 },
+		{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 8 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 16 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8 },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16 },
 	};
 	VkDescriptorPoolCreateInfo dpInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-	dpInfo.maxSets = 4;
+	dpInfo.maxSets = 8;
 	dpInfo.poolSizeCount = 4;
 	dpInfo.pPoolSizes = poolSizes;
 	if(vkCreateDescriptorPool(gVk.device, &dpInfo, nullptr, &gDescPool) != VK_SUCCESS)
@@ -212,12 +263,130 @@ PassesInit(void)
 	if(vkAllocateDescriptorSets(gVk.device, &aoDsInfo, &gAoDescSet) != VK_SUCCESS)
 		return false;
 
+	// --- GI pass ---------------------------------------------------------
+
+	{
+	VkDescriptorSetLayoutBinding b[5] = {};
+	VkDescriptorType types[5] = {
+		VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+	};
+	for(int i = 0; i < 5; i++){
+		b[i].binding = i;
+		b[i].descriptorType = types[i];
+		b[i].descriptorCount = 1;
+		b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	}
+	VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+	li.bindingCount = 5;
+	li.pBindings = b;
+	if(vkCreateDescriptorSetLayout(gVk.device, &li, nullptr, &gGiSetLayout) != VK_SUCCESS)
+		return false;
+
+	VkPushConstantRange pcr = {};
+	pcr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	pcr.size = sizeof(GiPushConstants);
+	VkPipelineLayoutCreateInfo pli = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+	pli.setLayoutCount = 1;
+	pli.pSetLayouts = &gGiSetLayout;
+	pli.pushConstantRangeCount = 1;
+	pli.pPushConstantRanges = &pcr;
+	if(vkCreatePipelineLayout(gVk.device, &pli, nullptr, &gGiPipeLayout) != VK_SUCCESS)
+		return false;
+	gGiPipeline = createComputePipeline(gi_comp_spv, sizeof(gi_comp_spv), gGiPipeLayout);
+	if(gGiPipeline == VK_NULL_HANDLE)
+		return false;
+	VkDescriptorSetAllocateInfo dsi = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+	dsi.descriptorPool = gDescPool;
+	dsi.descriptorSetCount = 1;
+	dsi.pSetLayouts = &gGiSetLayout;
+	if(vkAllocateDescriptorSets(gVk.device, &dsi, &gGiDescSet) != VK_SUCCESS)
+		return false;
+	}
+
+	// --- temporal pass ---------------------------------------------------
+
+	{
+	VkDescriptorSetLayoutBinding b[7] = {};
+	VkDescriptorType types[7] = {
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// giRaw
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// prevAccum
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// prevDepth
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// gbDepth
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// outAccum
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// outShared (GL)
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// outPrevDepth
+	};
+	for(int i = 0; i < 7; i++){
+		b[i].binding = i;
+		b[i].descriptorType = types[i];
+		b[i].descriptorCount = 1;
+		b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	}
+	VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+	li.bindingCount = 7;
+	li.pBindings = b;
+	if(vkCreateDescriptorSetLayout(gVk.device, &li, nullptr, &gTemporalSetLayout) != VK_SUCCESS)
+		return false;
+
+	VkPushConstantRange pcr = {};
+	pcr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	pcr.size = sizeof(TemporalPushConstants);
+	VkPipelineLayoutCreateInfo pli = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+	pli.setLayoutCount = 1;
+	pli.pSetLayouts = &gTemporalSetLayout;
+	pli.pushConstantRangeCount = 1;
+	pli.pPushConstantRanges = &pcr;
+	if(vkCreatePipelineLayout(gVk.device, &pli, nullptr, &gTemporalPipeLayout) != VK_SUCCESS)
+		return false;
+	gTemporalPipeline = createComputePipeline(temporal_comp_spv, sizeof(temporal_comp_spv), gTemporalPipeLayout);
+	if(gTemporalPipeline == VK_NULL_HANDLE)
+		return false;
+	VkDescriptorSetAllocateInfo dsi = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+	dsi.descriptorPool = gDescPool;
+	dsi.descriptorSetCount = 1;
+	dsi.pSetLayouts = &gTemporalSetLayout;
+	if(vkAllocateDescriptorSets(gVk.device, &dsi, &gTemporalDescSet) != VK_SUCCESS)
+		return false;
+	}
+
+	int w = gInterop.giOutput.width, h = gInterop.giOutput.height;
+	VkImageUsageFlags giUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+	if(!ImageCreate(&gGiRaw, w, h, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage) ||
+	   !ImageCreate(&gGiAccum[0], w, h, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage) ||
+	   !ImageCreate(&gGiAccum[1], w, h, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage) ||
+	   !ImageCreate(&gDepthHist[0], w, h, VK_FORMAT_R32_SFLOAT, giUsage) ||
+	   !ImageCreate(&gDepthHist[1], w, h, VK_FORMAT_R32_SFLOAT, giUsage))
+		return false;
+
 	return true;
 }
 
 void
 PassesShutdown(void)
 {
+	ImageDestroy(&gGiRaw);
+	ImageDestroy(&gGiAccum[0]);
+	ImageDestroy(&gGiAccum[1]);
+	ImageDestroy(&gDepthHist[0]);
+	ImageDestroy(&gDepthHist[1]);
+	if(gGiPipeline) vkDestroyPipeline(gVk.device, gGiPipeline, nullptr);
+	if(gGiPipeLayout) vkDestroyPipelineLayout(gVk.device, gGiPipeLayout, nullptr);
+	if(gGiSetLayout) vkDestroyDescriptorSetLayout(gVk.device, gGiSetLayout, nullptr);
+	if(gTemporalPipeline) vkDestroyPipeline(gVk.device, gTemporalPipeline, nullptr);
+	if(gTemporalPipeLayout) vkDestroyPipelineLayout(gVk.device, gTemporalPipeLayout, nullptr);
+	if(gTemporalSetLayout) vkDestroyDescriptorSetLayout(gVk.device, gTemporalSetLayout, nullptr);
+	gGiPipeline = VK_NULL_HANDLE;
+	gGiPipeLayout = VK_NULL_HANDLE;
+	gGiSetLayout = VK_NULL_HANDLE;
+	gTemporalPipeline = VK_NULL_HANDLE;
+	gTemporalPipeLayout = VK_NULL_HANDLE;
+	gTemporalSetLayout = VK_NULL_HANDLE;
+	gGiImagesInitialised = false;
+	gHavePrevCam = false;
 	if(gAoPipeline) vkDestroyPipeline(gVk.device, gAoPipeline, nullptr);
 	if(gAoPipeLayout) vkDestroyPipelineLayout(gVk.device, gAoPipeLayout, nullptr);
 	if(gAoSetLayout) vkDestroyDescriptorSetLayout(gVk.device, gAoSetLayout, nullptr);
@@ -362,6 +531,161 @@ PassesTraceAO(VkCommandBuffer cmd, uint32_t frame, uint32_t numRays, float radiu
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gAoPipeLayout, 0, 1, &gAoDescSet, 0, nullptr);
 	vkCmdPushConstants(cmd, gAoPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
 	vkCmdDispatch(cmd, (gInterop.aoOutput.width + 7)/8, (gInterop.aoOutput.height + 7)/8, 1);
+}
+
+static void
+fillCamera(float pos[4], float right[4], float up[4], float fwd[4])
+{
+	rw::Camera *cam = (rw::Camera*)Scene.camera;
+	rw::Matrix *ltm = cam->getFrame()->getLTM();
+	pos[0] = ltm->pos.x; pos[1] = ltm->pos.y; pos[2] = ltm->pos.z; pos[3] = 0.0f;
+	right[0] = ltm->right.x; right[1] = ltm->right.y; right[2] = ltm->right.z;
+	right[3] = cam->viewWindow.x;
+	up[0] = ltm->up.x; up[1] = ltm->up.y; up[2] = ltm->up.z;
+	up[3] = cam->viewWindow.y;
+	fwd[0] = ltm->at.x; fwd[1] = ltm->at.y; fwd[2] = ltm->at.z; fwd[3] = 0.0f;
+}
+
+bool
+PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
+{
+	int w = gInterop.giOutput.width, h = gInterop.giOutput.height;
+	int cur = gAccumIndex, prev = 1 - gAccumIndex;
+
+	// first use: everything to GENERAL once
+	if(!gGiImagesInitialised){
+		VkImageMemoryBarrier barriers[4] = {};
+		VkImage images[4] = { gGiRaw.image, gGiAccum[0].image, gGiAccum[1].image, gDepthHist[0].image };
+		for(int i = 0; i < 4; i++){
+			barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barriers[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+			barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barriers[i].image = images[i];
+			barriers[i].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+			barriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		}
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			0, 0, nullptr, 0, nullptr, 4, barriers);
+		gGiImagesInitialised = true;
+		resetHistory = true;
+	}
+
+	// GI descriptors
+	{
+	VkAccelerationStructureKHR tlas = TlasHandle();
+	VkWriteDescriptorSetAccelerationStructureKHR asWrite = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
+	asWrite.accelerationStructureCount = 1;
+	asWrite.pAccelerationStructures = &tlas;
+	VkDescriptorImageInfo rawInfo = { VK_NULL_HANDLE, gGiRaw.view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo normalInfo = { gInterop.sampler, gInterop.gbNormal.view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo depthInfo = { gInterop.sampler, gInterop.gbDepth.view, VK_IMAGE_LAYOUT_GENERAL };
+	GpuBuffer *records = BlasRecordBuffer();
+	VkDescriptorBufferInfo bufInfo = { records->buf, 0, VK_WHOLE_SIZE };
+
+	VkWriteDescriptorSet writes[5] = {};
+	for(int i = 0; i < 5; i++){
+		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[i].dstSet = gGiDescSet;
+		writes[i].dstBinding = i;
+		writes[i].descriptorCount = 1;
+	}
+	writes[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+	writes[0].pNext = &asWrite;
+	writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	writes[1].pImageInfo = &rawInfo;
+	writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	writes[2].pImageInfo = &normalInfo;
+	writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	writes[3].pImageInfo = &depthInfo;
+	writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	writes[4].pBufferInfo = &bufInfo;
+	vkUpdateDescriptorSets(gVk.device, 5, writes, 0, nullptr);
+	}
+
+	GiPushConstants gpc = {};
+	fillCamera(gpc.camPos, gpc.camRight, gpc.camUp, gpc.camFwd);
+	CVector sunDir = CTimeCycle::GetSunDirection();
+	gpc.sunDir[0] = sunDir.x; gpc.sunDir[1] = sunDir.y; gpc.sunDir[2] = sunDir.z;
+	gpc.sunDir[3] = sunDir.z > 0.0f ? 1.0f : 0.0f;
+	gpc.sunColor[0] = CTimeCycle::GetDirectionalRed();
+	gpc.sunColor[1] = CTimeCycle::GetDirectionalGreen();
+	gpc.sunColor[2] = CTimeCycle::GetDirectionalBlue();
+	gpc.skyTop[0] = CTimeCycle::GetSkyTopRed()/255.0f;
+	gpc.skyTop[1] = CTimeCycle::GetSkyTopGreen()/255.0f;
+	gpc.skyTop[2] = CTimeCycle::GetSkyTopBlue()/255.0f;
+	gpc.skyBottom[0] = CTimeCycle::GetSkyBottomRed()/255.0f;
+	gpc.skyBottom[1] = CTimeCycle::GetSkyBottomGreen()/255.0f;
+	gpc.skyBottom[2] = CTimeCycle::GetSkyBottomBlue()/255.0f;
+	gpc.size[0] = w; gpc.size[1] = h;
+	gpc.frame = frame;
+
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gGiPipeline);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gGiPipeLayout, 0, 1, &gGiDescSet, 0, nullptr);
+	vkCmdPushConstants(cmd, gGiPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(gpc), &gpc);
+	vkCmdDispatch(cmd, (w + 7)/8, (h + 7)/8, 1);
+
+	// giRaw written -> temporal reads it
+	VkMemoryBarrier memBarrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+	memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+
+	// temporal descriptors
+	{
+	VkDescriptorImageInfo rawInfo = { VK_NULL_HANDLE, gGiRaw.view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo prevAccumInfo = { gInterop.sampler, gGiAccum[prev].view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo prevDepthInfo = { gInterop.sampler, gDepthHist[prev].view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo depthInfo = { gInterop.sampler, gInterop.gbDepth.view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo outAccumInfo = { VK_NULL_HANDLE, gGiAccum[cur].view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo outSharedInfo = { VK_NULL_HANDLE, gInterop.giOutput.view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo outPrevDepthInfo = { VK_NULL_HANDLE, gDepthHist[cur].view, VK_IMAGE_LAYOUT_GENERAL };
+
+	VkWriteDescriptorSet writes[7] = {};
+	const VkDescriptorImageInfo *infos[7] = { &rawInfo, &prevAccumInfo, &prevDepthInfo,
+		&depthInfo, &outAccumInfo, &outSharedInfo, &outPrevDepthInfo };
+	VkDescriptorType types[7] = {
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	};
+	for(int i = 0; i < 7; i++){
+		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[i].dstSet = gTemporalDescSet;
+		writes[i].dstBinding = i;
+		writes[i].descriptorCount = 1;
+		writes[i].descriptorType = types[i];
+		writes[i].pImageInfo = infos[i];
+	}
+	vkUpdateDescriptorSets(gVk.device, 7, writes, 0, nullptr);
+	}
+
+	TemporalPushConstants tpc = {};
+	fillCamera(tpc.camPos, tpc.camRight, tpc.camUp, tpc.camFwd);
+	if(gHavePrevCam)
+		memcpy(tpc.prevCamPos, gPrevCam, sizeof(gPrevCam));
+	else
+		resetHistory = true;
+	tpc.size[0] = w; tpc.size[1] = h;
+	tpc.frame = frame;
+	tpc.reset = resetHistory ? 1 : 0;
+
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gTemporalPipeline);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gTemporalPipeLayout, 0, 1, &gTemporalDescSet, 0, nullptr);
+	vkCmdPushConstants(cmd, gTemporalPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(tpc), &tpc);
+	vkCmdDispatch(cmd, (w + 7)/8, (h + 7)/8, 1);
+
+	// remember this frame's camera for reprojection
+	memcpy(gPrevCam, tpc.camPos, sizeof(gPrevCam));
+	gHavePrevCam = true;
+	gAccumIndex = prev;
+	return true;
 }
 
 }

@@ -8,6 +8,8 @@
 
 #include "blas.h"
 
+#include <glad/glad.h>
+
 #include "common.h"
 #include <rwcore.h>
 #include <rpworld.h>
@@ -37,6 +39,78 @@ static int gBuildsThisFrame;
 // finished, then freed in BlasBeginFrame
 static std::vector<GpuBuffer> gFrameScratch;
 static std::vector<GpuBuffer> gPrevFrameScratch;
+
+// --- material albedo ----------------------------------------------------------
+
+// mean texture color per rw::Texture, sampled once via GL readback; the GI
+// bounce uses this as the hit surface's albedo approximation
+static std::unordered_map<rw::Texture*, uint32_t> gTexMeanCache;
+
+static uint32_t
+textureMeanColor(rw::Texture *tex)
+{
+	if(tex == nil || tex->raster == nil)
+		return 0xFFFFFFFFu;
+	auto it = gTexMeanCache.find(tex);
+	if(it != gTexMeanCache.end())
+		return it->second;
+
+	uint32_t mean = 0xFFFFFFFFu;
+	rw::gl3::Gl3Raster *natras = PLUGINOFFSET(rw::gl3::Gl3Raster, tex->raster, rw::gl3::nativeRasterOffset);
+	if(natras && natras->texid){
+		GLint prevTex;
+		glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex);
+		glBindTexture(GL_TEXTURE_2D, natras->texid);
+		GLint w = 0, h = 0, level = 0;
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+		// use a small mip if present to keep the readback tiny
+		GLint levels = 0;
+		while((w >> levels) > 16 && (h >> levels) > 16)
+			levels++;
+		GLint lw = 0;
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, levels, GL_TEXTURE_WIDTH, &lw);
+		if(lw == 0)
+			levels = 0;
+		level = levels;
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_WIDTH, &w);
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_HEIGHT, &h);
+		if(w > 0 && h > 0 && w <= 512 && h <= 512){
+			uint8_t *pixels = (uint8_t*)malloc(w*h*4);
+			if(pixels){
+				glPixelStorei(GL_PACK_ALIGNMENT, 1);
+				glGetTexImage(GL_TEXTURE_2D, level, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+				if(glGetError() == GL_NO_ERROR){
+					uint64_t r = 0, g = 0, b = 0;
+					int n = w*h;
+					for(int i = 0; i < n; i++){
+						r += pixels[i*4+0];
+						g += pixels[i*4+1];
+						b += pixels[i*4+2];
+					}
+					mean = (uint32_t)(r/n) | ((uint32_t)(g/n) << 8) |
+						((uint32_t)(b/n) << 16) | 0xFF000000u;
+				}
+				free(pixels);
+			}
+		}
+		glBindTexture(GL_TEXTURE_2D, prevTex);
+	}
+	gTexMeanCache[tex] = mean;
+	return mean;
+}
+
+static uint32_t
+materialAlbedo(rw::Material *mat)
+{
+	if(mat == nil)
+		return 0xFFFFFFFFu;
+	uint32_t tm = textureMeanColor(mat->texture);
+	uint32_t r = ((tm & 0xFF) * mat->color.red) / 255;
+	uint32_t g = (((tm >> 8) & 0xFF) * mat->color.green) / 255;
+	uint32_t b = (((tm >> 16) & 0xFF) * mat->color.blue) / 255;
+	return r | (g << 8) | (b << 16) | 0xFF000000u;
+}
 
 // --- geometry destructor plugin ----------------------------------------------
 
@@ -240,6 +314,8 @@ BlasGetOrBuild(rw::Geometry *geo, VkCommandBuffer cmd)
 		GeomRecord &rec = gRecords[gNumRecords++];
 		rec.vtxAddr = e->vtxBuf.addr;
 		rec.idxAddr = e->idxBuf.addr + matOffset[m]*3*sizeof(uint32_t);
+		rec.albedo = materialAlbedo(m < geo->matList.numMaterials ? geo->matList.materials[m] : nil);
+		rec.pad = 0;
 	}
 	e->numRanges = numRanges;
 	gRecordsDirty = true;

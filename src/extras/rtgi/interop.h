@@ -36,6 +36,7 @@ struct InteropState
 	// VK writes, GL reads
 	SharedImage rtOutput;	// RGBA16F debug/trace output
 	SharedImage aoOutput;	// RG8: r = AO visibility, g = sun visibility (M4)
+	SharedImage giOutput;	// RGBA16F accumulated diffuse GI radiance
 
 	VkSampler sampler;	// nearest, for sampling the G-buffer in compute
 

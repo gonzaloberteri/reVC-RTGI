@@ -16,6 +16,9 @@ void PassesTracePrimary(VkCommandBuffer cmd, uint32_t mode, uint32_t frame);
 // ray traced AO from the G-buffer into the shared AO image
 void PassesTraceAO(VkCommandBuffer cmd, uint32_t frame, uint32_t numRays, float radius);
 
+// one-bounce diffuse GI + temporal accumulation into the shared GI image
+bool PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory);
+
 }
 
 #endif

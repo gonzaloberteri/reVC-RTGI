@@ -68,6 +68,20 @@ void BufferDestroy(GpuBuffer *b);
 // returns false on allocation failure
 bool BufferEnsure(GpuBuffer *b, VkDeviceSize size, VkBufferUsageFlags usage, bool hostVisible);
 
+// --- VK-only image (not shared with GL) ---------------------------------------
+
+struct GpuImage
+{
+	VkImage image;
+	VkImageView view;
+	VmaAllocation alloc;
+	VkFormat format;
+	int width, height;
+};
+
+bool ImageCreate(GpuImage *img, int width, int height, VkFormat format, VkImageUsageFlags usage);
+void ImageDestroy(GpuImage *img);
+
 }
 
 #endif

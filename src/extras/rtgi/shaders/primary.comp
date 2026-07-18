@@ -17,6 +17,8 @@ layout(buffer_reference, std430, buffer_reference_align = 4) buffer UintBuf { ui
 struct GeomRecord {
 	uint64_t vtx;
 	uint64_t idx;
+	uint albedo;	// packed RGBA8
+	uint pad;
 };
 layout(binding = 2, std430) readonly buffer Records { GeomRecord records[]; };
 

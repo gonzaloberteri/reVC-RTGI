@@ -17,6 +17,7 @@ enum eDebugView {
 	DEBUGVIEW_GB_NORMAL,	// G-buffer world normals
 	DEBUGVIEW_GB_DEPTH,	// G-buffer linear depth
 	DEBUGVIEW_SUNVIS,	// ray traced sun visibility
+	DEBUGVIEW_GI,		// accumulated diffuse GI radiance
 	DEBUGVIEW_MAX
 };
 
@@ -30,6 +31,10 @@ extern float gfAORadius;
 extern int32 gnAORays;
 // RT sun shadows (vehicle blob-shadow replacement)
 extern bool gbSunShadows;
+// diffuse GI
+extern bool gbGIEnable;
+extern float gfGIBlend;		// 0 = flat timecycle ambient, 1 = full GI
+extern float gfGIExposure;
 
 // true when RT shadows replace the vehicle blob shadows this frame
 bool ReplacingVehicleShadows(void);

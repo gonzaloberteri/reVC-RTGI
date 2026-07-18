@@ -22,6 +22,10 @@
 #include "Timer.h"
 #include "Frontend.h"
 #include "Draw.h"
+#include "World.h"
+#include "PlayerPed.h"
+#include "Game.h"
+#include "Clock.h"
 
 namespace RayTracedGI {
 
@@ -51,9 +55,19 @@ float gfAOStrength = 0.85f;
 float gfAORadius = 2.5f;
 int32 gnAORays = 2;
 bool gbSunShadows = true;
+bool gbGIEnable = true;
+float gfGIBlend = 0.6f;
+float gfGIExposure = 1.0f;
 
 static bool initialised;
 static uint32 frameCounter;
+static bool gResetGIHistory = true;
+
+// dev/testing: config "tp=x,y,z" teleports the player once the world is
+// streamed in, so automated runs can verify any location
+static float gTeleport[3];
+static bool gWantTeleport;
+static int32 gnForceHour = -1;	// config "hour=N": pin the game clock
 // a VK submit happened this frame and GL must signal it back, regardless of
 // what the debug menu did to the toggles in between
 static bool gFrameSubmitted;
@@ -203,7 +217,12 @@ readConfigFile(void)
 		else if(sscanf(line, "aoradius=%f", &fval) == 1) gfAORadius = fval;
 		else if(sscanf(line, "aorays=%d", &ival) == 1) gnAORays = ival;
 		else if(sscanf(line, "sunshadows=%d", &ival) == 1) gbSunShadows = ival != 0;
+		else if(sscanf(line, "gi=%d", &ival) == 1) gbGIEnable = ival != 0;
+		else if(sscanf(line, "giblend=%f", &fval) == 1) gfGIBlend = fval;
+		else if(sscanf(line, "giexposure=%f", &fval) == 1) gfGIExposure = fval;
 		else if(sscanf(line, "shotframes=%d", &ival) == 1) gnShotFrames = ival;
+		else if(sscanf(line, "tp=%f,%f,%f", &gTeleport[0], &gTeleport[1], &gTeleport[2]) == 3) gWantTeleport = true;
+		else if(sscanf(line, "hour=%d", &ival) == 1) gnForceHour = ival;
 	}
 	fclose(f);
 	RtgiLog("RTGI: config file applied (view=%d ao=%d strength=%.2f)\n",
@@ -271,6 +290,34 @@ RenderFrame(void)
 	if(!initialised || !gbRayTracedGI)
 		return;
 
+	// dev teleport once gameplay is up and the world has streamed in
+	if(gWantTeleport && frameCounter == 150){
+		CPlayerPed *player = FindPlayerPed();
+		if(player){
+			// leave whatever interior the save was in
+			CGame::currArea = AREA_MAIN_MAP;
+			player->m_area = AREA_MAIN_MAP;
+			player->Teleport(CVector(gTeleport[0], gTeleport[1], gTeleport[2]));
+			RtgiLog("RTGI: teleported player to %.0f %.0f %.0f\n",
+				gTeleport[0], gTeleport[1], gTeleport[2]);
+		}
+		gWantTeleport = false;
+		gResetGIHistory = true;
+	}
+	if(gnForceHour >= 0 && frameCounter >= 150 && CClock::GetHours() != gnForceHour){
+		CClock::GetHoursRef() = gnForceHour;
+		CClock::GetMinutesRef() = 0;
+	}
+
+	// drop GI history on interior/level changes (bulk geometry swaps)
+	{
+		static int prevArea = -1;
+		if(CGame::currArea != prevArea){
+			prevArea = CGame::currArea;
+			gResetGIHistory = true;
+		}
+	}
+
 	// don't re-record while the previous frame's VK work is in flight
 	vkWaitForFences(gVk.device, 1, &gVk.frameFence, VK_TRUE, UINT64_MAX);
 	vkResetFences(gVk.device, 1, &gVk.frameFence);
@@ -327,6 +374,16 @@ RenderFrame(void)
 				0, 0, nullptr, 0, nullptr, 1, &aoToGeneral);
 			// gbuffer images were left in GENERAL by the semaphore import
 			PassesTraceAO(gVk.cmdBuf, frameCounter, (uint32_t)gnAORays, gfAORadius);
+
+			// diffuse GI + temporal accumulation
+			if(gbGIEnable){
+				VkImageMemoryBarrier giToGeneral = toGeneral;
+				giToGeneral.image = gInterop.giOutput.image;
+				vkCmdPipelineBarrier(gVk.cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+					0, 0, nullptr, 0, nullptr, 1, &giToGeneral);
+				PassesTraceGI(gVk.cmdBuf, frameCounter, gResetGIHistory);
+				gResetGIHistory = false;
+			}
 		}
 
 		VkImageMemoryBarrier afterTrace = toGeneral;
@@ -440,6 +497,7 @@ DebugRender(void)
 		case DEBUGVIEW_GB_NORMAL: tex = gInterop.gbNormal.glTexture; mode = 2; break;
 		case DEBUGVIEW_GB_DEPTH: tex = gInterop.gbDepth.glTexture; mode = 3; break;
 		case DEBUGVIEW_SUNVIS: tex = gInterop.aoOutput.glTexture; mode = 4; break;
+		case DEBUGVIEW_GI: tex = gInterop.giOutput.glTexture; mode = 0; break;
 		}
 		glUseProgram(blitProgram);
 		glBindVertexArray(blitVAO);
@@ -473,11 +531,14 @@ ReplacingVehicleShadows(void)
 void
 AddDebugMenuEntries(void)
 {
-	static const char *debugViews[] = { "Off", "Interop", "RT Normals", "RT Depth", "RT Instances", "AO", "GB Normal", "GB Depth", "Sun Vis" };
+	static const char *debugViews[] = { "Off", "Interop", "RT Normals", "RT Depth", "RT Instances", "AO", "GB Normal", "GB Depth", "Sun Vis", "GI" };
 	DebugMenuAddVarBool8("RTGI", "Ray traced GI", (int8_t*)&gbRayTracedGI, nil);
 	DebugMenuAddVar("RTGI", "Debug view", &gnDebugView, nil, 1, 0, DEBUGVIEW_MAX-1, debugViews);
 	DebugMenuAddVarBool8("RTGI", "RT ambient occlusion", (int8_t*)&gbAOEnable, nil);
 	DebugMenuAddVarBool8("RTGI", "RT sun shadows", (int8_t*)&gbSunShadows, nil);
+	DebugMenuAddVarBool8("RTGI", "Diffuse GI", (int8_t*)&gbGIEnable, nil);
+	DebugMenuAddVar("RTGI", "GI blend", &gfGIBlend, nil, 0.05f, 0.0f, 1.0f);
+	DebugMenuAddVar("RTGI", "GI exposure", &gfGIExposure, nil, 0.1f, 0.1f, 5.0f);
 	DebugMenuAddVar("RTGI", "AO strength", &gfAOStrength, nil, 0.05f, 0.0f, 1.0f);
 	DebugMenuAddVar("RTGI", "AO radius", &gfAORadius, nil, 0.5f, 0.5f, 10.0f);
 	DebugMenuAddVar("RTGI", "AO rays", &gnAORays, nil, 1, 1, 8, nil);

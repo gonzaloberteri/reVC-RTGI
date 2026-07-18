@@ -279,6 +279,46 @@ BufferEnsure(GpuBuffer *b, VkDeviceSize size, VkBufferUsageFlags usage, bool hos
 	return BufferCreate(b, size + size/2, usage, hostVisible);
 }
 
+bool
+ImageCreate(GpuImage *img, int width, int height, VkFormat format, VkImageUsageFlags usage)
+{
+	memset(img, 0, sizeof(*img));
+	img->format = format;
+	img->width = width;
+	img->height = height;
+
+	VkImageCreateInfo imgInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+	imgInfo.imageType = VK_IMAGE_TYPE_2D;
+	imgInfo.format = format;
+	imgInfo.extent = { (uint32_t)width, (uint32_t)height, 1 };
+	imgInfo.mipLevels = 1;
+	imgInfo.arrayLayers = 1;
+	imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+	imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+	imgInfo.usage = usage;
+	imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+	VmaAllocationCreateInfo allocInfo = {};
+	allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+	if(vmaCreateImage(gVk.allocator, &imgInfo, &allocInfo, &img->image, &img->alloc, nullptr) != VK_SUCCESS)
+		return false;
+
+	VkImageViewCreateInfo viewInfo = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+	viewInfo.image = img->image;
+	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	viewInfo.format = format;
+	viewInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+	return vkCreateImageView(gVk.device, &viewInfo, nullptr, &img->view) == VK_SUCCESS;
+}
+
+void
+ImageDestroy(GpuImage *img)
+{
+	if(img->view) vkDestroyImageView(gVk.device, img->view, nullptr);
+	if(img->image) vmaDestroyImage(gVk.allocator, img->image, img->alloc);
+	memset(img, 0, sizeof(*img));
+}
+
 uint32_t
 VkFindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags props)
 {

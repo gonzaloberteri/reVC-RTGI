@@ -27,6 +27,8 @@ struct GeomRecord
 {
 	VkDeviceAddress vtxAddr;
 	VkDeviceAddress idxAddr;	// start of this range's indices
+	uint32_t albedo;		// RGBA8: material color x mean texture color
+	uint32_t pad;
 };
 
 // register the librw geometry-destructor plugin. Call once, before game
