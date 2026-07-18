@@ -18,6 +18,7 @@ enum eDebugView {
 	DEBUGVIEW_GB_DEPTH,	// G-buffer linear depth
 	DEBUGVIEW_SUNVIS,	// ray traced sun visibility
 	DEBUGVIEW_GI,		// accumulated diffuse GI radiance
+	DEBUGVIEW_REFL,		// reflections
 	DEBUGVIEW_MAX
 };
 
@@ -36,6 +37,7 @@ extern bool gbGIEnable;
 extern float gfGIBlend;		// 0 = flat timecycle ambient, 1 = full GI
 extern float gfGIExposure;
 extern bool gbDenoise;
+extern bool gbReflections;
 
 // true when RT shadows replace the vehicle blob shadows this frame
 bool ReplacingVehicleShadows(void);

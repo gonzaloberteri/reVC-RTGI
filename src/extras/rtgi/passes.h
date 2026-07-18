@@ -22,6 +22,9 @@ bool PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory);
 // a-trous spatial filter over the accumulated GI, output into the shared image
 void PassesDenoiseGI(VkCommandBuffer cmd);
 
+// mirror reflections into the shared reflection image
+void PassesTraceReflections(VkCommandBuffer cmd, uint32_t frame);
+
 }
 
 #endif

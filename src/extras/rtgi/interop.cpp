@@ -229,6 +229,8 @@ InteropCreate(int width, int height)
 		return false;
 	if(!SharedImageCreate(&gInterop.giOutput, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, GL_RGBA16F, true))
 		return false;
+	if(!SharedImageCreate(&gInterop.reflOutput, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, GL_RGBA16F, true))
+		return false;
 	if(!sharedSemaphoreCreate(&gInterop.semGbufDone, &gInterop.glSemGbufDone))
 		return false;
 	if(!sharedSemaphoreCreate(&gInterop.semRtDone, &gInterop.glSemRtDone))
@@ -266,6 +268,7 @@ InteropDestroy(void)
 	SharedImageDestroy(&gInterop.rtOutput);
 	SharedImageDestroy(&gInterop.aoOutput);
 	SharedImageDestroy(&gInterop.giOutput);
+	SharedImageDestroy(&gInterop.reflOutput);
 	SharedImageDestroy(&gInterop.gbNormal);
 	SharedImageDestroy(&gInterop.gbDepth);
 	memset(&gInterop, 0, sizeof(gInterop));
@@ -283,20 +286,22 @@ InteropSignalGbufDone(void)
 void
 InteropWaitRtDone(void)
 {
-	GLenum layouts[3] = { GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT };
-	GLuint textures[3] = { gInterop.rtOutput.glTexture, gInterop.aoOutput.glTexture,
-		gInterop.giOutput.glTexture };
-	glWaitSemaphoreEXT_(gInterop.glSemRtDone, 0, nullptr, 3, textures, layouts);
+	GLenum layouts[4] = { GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT,
+		GL_LAYOUT_GENERAL_EXT };
+	GLuint textures[4] = { gInterop.rtOutput.glTexture, gInterop.aoOutput.glTexture,
+		gInterop.giOutput.glTexture, gInterop.reflOutput.glTexture };
+	glWaitSemaphoreEXT_(gInterop.glSemRtDone, 0, nullptr, 4, textures, layouts);
 }
 
 void
 InteropSignalGlDone(void)
 {
-	GLenum layouts[5] = { GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT,
-		GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT };
-	GLuint textures[5] = { gInterop.rtOutput.glTexture, gInterop.aoOutput.glTexture,
-		gInterop.giOutput.glTexture, gInterop.gbNormal.glTexture, gInterop.gbDepth.glTexture };
-	glSignalSemaphoreEXT_(gInterop.glSemGlDone, 0, nullptr, 5, textures, layouts);
+	GLenum layouts[6] = { GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT,
+		GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT };
+	GLuint textures[6] = { gInterop.rtOutput.glTexture, gInterop.aoOutput.glTexture,
+		gInterop.giOutput.glTexture, gInterop.reflOutput.glTexture,
+		gInterop.gbNormal.glTexture, gInterop.gbDepth.glTexture };
+	glSignalSemaphoreEXT_(gInterop.glSemGlDone, 0, nullptr, 6, textures, layouts);
 	// make sure the signal reaches the driver promptly
 	glFlush();
 }

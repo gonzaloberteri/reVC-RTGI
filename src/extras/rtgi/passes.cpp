@@ -15,12 +15,14 @@
 #include "main.h"
 #include "Timecycle.h"
 #include "PointLights.h"
+#include "Weather.h"
 
 #include "shaders/obj/primary_comp.inc"
 #include "shaders/obj/ao_comp.inc"
 #include "shaders/obj/gi_comp.inc"
 #include "shaders/obj/temporal_comp.inc"
 #include "shaders/obj/atrous_comp.inc"
+#include "shaders/obj/refl_comp.inc"
 
 namespace RayTracedGI {
 
@@ -126,6 +128,26 @@ struct GpuPointLight
 	float color[4];
 };
 static GpuBuffer gLightBuf;
+
+// reflections
+struct ReflPushConstants
+{
+	float camPos[4];
+	float camRight[4];
+	float camUp[4];
+	float camFwd[4];
+	float sunDir[4];
+	float sunColor[4];
+	float skyTop[4];
+	float skyBottom[4];
+	uint32_t size[2];
+	uint32_t frame;
+	float wetness;
+};
+static VkDescriptorSetLayout gReflSetLayout;
+static VkPipelineLayout gReflPipeLayout;
+static VkPipeline gReflPipeline;
+static VkDescriptorSet gReflDescSet;
 static int gAccumIndex;
 static bool gGiImagesInitialised;	// UNDEFINED->GENERAL done
 static float gPrevCam[16];		// pos/right/up/fwd with vw in w
@@ -377,6 +399,49 @@ PassesInit(void)
 		return false;
 	}
 
+	// --- reflections -----------------------------------------------------
+
+	{
+	VkDescriptorSetLayoutBinding b[5] = {};
+	VkDescriptorType types[5] = {
+		VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+	};
+	for(int i = 0; i < 5; i++){
+		b[i].binding = i;
+		b[i].descriptorType = types[i];
+		b[i].descriptorCount = 1;
+		b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	}
+	VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+	li.bindingCount = 5;
+	li.pBindings = b;
+	if(vkCreateDescriptorSetLayout(gVk.device, &li, nullptr, &gReflSetLayout) != VK_SUCCESS)
+		return false;
+	VkPushConstantRange pcr = {};
+	pcr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	pcr.size = sizeof(ReflPushConstants);
+	VkPipelineLayoutCreateInfo pli = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+	pli.setLayoutCount = 1;
+	pli.pSetLayouts = &gReflSetLayout;
+	pli.pushConstantRangeCount = 1;
+	pli.pPushConstantRanges = &pcr;
+	if(vkCreatePipelineLayout(gVk.device, &pli, nullptr, &gReflPipeLayout) != VK_SUCCESS)
+		return false;
+	gReflPipeline = createComputePipeline(refl_comp_spv, sizeof(refl_comp_spv), gReflPipeLayout);
+	if(gReflPipeline == VK_NULL_HANDLE)
+		return false;
+	VkDescriptorSetAllocateInfo dsi = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+	dsi.descriptorPool = gDescPool;
+	dsi.descriptorSetCount = 1;
+	dsi.pSetLayouts = &gReflSetLayout;
+	if(vkAllocateDescriptorSets(gVk.device, &dsi, &gReflDescSet) != VK_SUCCESS)
+		return false;
+	}
+
 	int w = gInterop.giOutput.width, h = gInterop.giOutput.height;
 	VkImageUsageFlags giUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 	if(!ImageCreate(&gGiRaw, w, h, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage) ||
@@ -437,6 +502,12 @@ void
 PassesShutdown(void)
 {
 	BufferDestroy(&gLightBuf);
+	if(gReflPipeline) vkDestroyPipeline(gVk.device, gReflPipeline, nullptr);
+	if(gReflPipeLayout) vkDestroyPipelineLayout(gVk.device, gReflPipeLayout, nullptr);
+	if(gReflSetLayout) vkDestroyDescriptorSetLayout(gVk.device, gReflSetLayout, nullptr);
+	gReflPipeline = VK_NULL_HANDLE;
+	gReflPipeLayout = VK_NULL_HANDLE;
+	gReflSetLayout = VK_NULL_HANDLE;
 	ImageDestroy(&gAtrousScratch);
 	if(gAtrousPipeline) vkDestroyPipeline(gVk.device, gAtrousPipeline, nullptr);
 	if(gAtrousPipeLayout) vkDestroyPipelineLayout(gVk.device, gAtrousPipeLayout, nullptr);
@@ -793,6 +864,64 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 	gHavePrevCam = true;
 	gAccumIndex = prev;
 	return true;
+}
+
+void
+PassesTraceReflections(VkCommandBuffer cmd, uint32_t frame)
+{
+	int w = gInterop.reflOutput.width, h = gInterop.reflOutput.height;
+
+	VkAccelerationStructureKHR tlas = TlasHandle();
+	VkWriteDescriptorSetAccelerationStructureKHR asWrite = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
+	asWrite.accelerationStructureCount = 1;
+	asWrite.pAccelerationStructures = &tlas;
+	VkDescriptorImageInfo outInfo = { VK_NULL_HANDLE, gInterop.reflOutput.view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo normalInfo = { gInterop.sampler, gInterop.gbNormal.view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo depthInfo = { gInterop.sampler, gInterop.gbDepth.view, VK_IMAGE_LAYOUT_GENERAL };
+	GpuBuffer *records = BlasRecordBuffer();
+	VkDescriptorBufferInfo bufInfo = { records->buf, 0, VK_WHOLE_SIZE };
+
+	VkWriteDescriptorSet writes[5] = {};
+	for(int i = 0; i < 5; i++){
+		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[i].dstSet = gReflDescSet;
+		writes[i].dstBinding = i;
+		writes[i].descriptorCount = 1;
+	}
+	writes[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+	writes[0].pNext = &asWrite;
+	writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	writes[1].pImageInfo = &outInfo;
+	writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	writes[2].pImageInfo = &normalInfo;
+	writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	writes[3].pImageInfo = &depthInfo;
+	writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	writes[4].pBufferInfo = &bufInfo;
+	vkUpdateDescriptorSets(gVk.device, 5, writes, 0, nullptr);
+
+	ReflPushConstants pc = {};
+	fillCamera(pc.camPos, pc.camRight, pc.camUp, pc.camFwd);
+	CVector sunDir = CTimeCycle::GetSunDirection();
+	pc.sunDir[0] = sunDir.x; pc.sunDir[1] = sunDir.y; pc.sunDir[2] = sunDir.z;
+	pc.sunDir[3] = sunDir.z > 0.0f ? 1.0f : 0.0f;
+	pc.sunColor[0] = CTimeCycle::GetDirectionalRed();
+	pc.sunColor[1] = CTimeCycle::GetDirectionalGreen();
+	pc.sunColor[2] = CTimeCycle::GetDirectionalBlue();
+	pc.skyTop[0] = CTimeCycle::GetSkyTopRed()/255.0f;
+	pc.skyTop[1] = CTimeCycle::GetSkyTopGreen()/255.0f;
+	pc.skyTop[2] = CTimeCycle::GetSkyTopBlue()/255.0f;
+	pc.skyBottom[0] = CTimeCycle::GetSkyBottomRed()/255.0f;
+	pc.skyBottom[1] = CTimeCycle::GetSkyBottomGreen()/255.0f;
+	pc.skyBottom[2] = CTimeCycle::GetSkyBottomBlue()/255.0f;
+	pc.size[0] = w; pc.size[1] = h;
+	pc.frame = frame;
+	pc.wetness = CWeather::WetRoads;
+
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gReflPipeline);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gReflPipeLayout, 0, 1, &gReflDescSet, 0, nullptr);
+	vkCmdPushConstants(cmd, gReflPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+	vkCmdDispatch(cmd, (w + 7)/8, (h + 7)/8, 1);
 }
 
 void

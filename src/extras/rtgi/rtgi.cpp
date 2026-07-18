@@ -26,6 +26,7 @@
 #include "PlayerPed.h"
 #include "Game.h"
 #include "Clock.h"
+#include "Weather.h"
 
 namespace RayTracedGI {
 
@@ -59,6 +60,7 @@ bool gbGIEnable = true;
 float gfGIBlend = 0.6f;
 float gfGIExposure = 1.0f;
 bool gbDenoise = true;
+bool gbReflections = true;
 
 static bool initialised;
 static uint32 frameCounter;
@@ -69,6 +71,7 @@ static bool gResetGIHistory = true;
 static float gTeleport[3];
 static bool gWantTeleport;
 static int32 gnForceHour = -1;	// config "hour=N": pin the game clock
+static int32 gnForceWeather = -1;	// config "weather=N"
 // a VK submit happened this frame and GL must signal it back, regardless of
 // what the debug menu did to the toggles in between
 static bool gFrameSubmitted;
@@ -222,9 +225,11 @@ readConfigFile(void)
 		else if(sscanf(line, "giblend=%f", &fval) == 1) gfGIBlend = fval;
 		else if(sscanf(line, "giexposure=%f", &fval) == 1) gfGIExposure = fval;
 		else if(sscanf(line, "denoise=%d", &ival) == 1) gbDenoise = ival != 0;
+		else if(sscanf(line, "reflections=%d", &ival) == 1) gbReflections = ival != 0;
 		else if(sscanf(line, "shotframes=%d", &ival) == 1) gnShotFrames = ival;
 		else if(sscanf(line, "tp=%f,%f,%f", &gTeleport[0], &gTeleport[1], &gTeleport[2]) == 3) gWantTeleport = true;
 		else if(sscanf(line, "hour=%d", &ival) == 1) gnForceHour = ival;
+		else if(sscanf(line, "weather=%d", &ival) == 1) gnForceWeather = ival;
 	}
 	fclose(f);
 	RtgiLog("RTGI: config file applied (view=%d ao=%d strength=%.2f)\n",
@@ -310,6 +315,10 @@ RenderFrame(void)
 		CClock::GetHoursRef() = gnForceHour;
 		CClock::GetMinutesRef() = 0;
 	}
+	if(gnForceWeather >= 0 && frameCounter == 160){
+		CWeather::ForceWeatherNow((int16)gnForceWeather);
+		RtgiLog("RTGI: forced weather %d\n", gnForceWeather);
+	}
 
 	// drop GI history on interior/level changes (bulk geometry swaps)
 	{
@@ -387,6 +396,15 @@ RenderFrame(void)
 				gResetGIHistory = false;
 				if(gbDenoise)
 					PassesDenoiseGI(gVk.cmdBuf);
+			}
+
+			// reflections
+			if(gbReflections){
+				VkImageMemoryBarrier reflToGeneral = toGeneral;
+				reflToGeneral.image = gInterop.reflOutput.image;
+				vkCmdPipelineBarrier(gVk.cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+					0, 0, nullptr, 0, nullptr, 1, &reflToGeneral);
+				PassesTraceReflections(gVk.cmdBuf, frameCounter);
 			}
 		}
 
@@ -502,6 +520,7 @@ DebugRender(void)
 		case DEBUGVIEW_GB_DEPTH: tex = gInterop.gbDepth.glTexture; mode = 3; break;
 		case DEBUGVIEW_SUNVIS: tex = gInterop.aoOutput.glTexture; mode = 4; break;
 		case DEBUGVIEW_GI: tex = gInterop.giOutput.glTexture; mode = 0; break;
+		case DEBUGVIEW_REFL: tex = gInterop.reflOutput.glTexture; mode = 0; break;
 		}
 		glUseProgram(blitProgram);
 		glBindVertexArray(blitVAO);
@@ -535,7 +554,7 @@ ReplacingVehicleShadows(void)
 void
 AddDebugMenuEntries(void)
 {
-	static const char *debugViews[] = { "Off", "Interop", "RT Normals", "RT Depth", "RT Instances", "AO", "GB Normal", "GB Depth", "Sun Vis", "GI" };
+	static const char *debugViews[] = { "Off", "Interop", "RT Normals", "RT Depth", "RT Instances", "AO", "GB Normal", "GB Depth", "Sun Vis", "GI", "Reflections" };
 	DebugMenuAddVarBool8("RTGI", "Ray traced GI", (int8_t*)&gbRayTracedGI, nil);
 	DebugMenuAddVar("RTGI", "Debug view", &gnDebugView, nil, 1, 0, DEBUGVIEW_MAX-1, debugViews);
 	DebugMenuAddVarBool8("RTGI", "RT ambient occlusion", (int8_t*)&gbAOEnable, nil);
@@ -544,6 +563,7 @@ AddDebugMenuEntries(void)
 	DebugMenuAddVar("RTGI", "GI blend", &gfGIBlend, nil, 0.05f, 0.0f, 1.0f);
 	DebugMenuAddVar("RTGI", "GI exposure", &gfGIExposure, nil, 0.1f, 0.1f, 5.0f);
 	DebugMenuAddVarBool8("RTGI", "GI denoise", (int8_t*)&gbDenoise, nil);
+	DebugMenuAddVarBool8("RTGI", "RT reflections", (int8_t*)&gbReflections, nil);
 	DebugMenuAddVar("RTGI", "AO strength", &gfAOStrength, nil, 0.05f, 0.0f, 1.0f);
 	DebugMenuAddVar("RTGI", "AO radius", &gfAORadius, nil, 0.5f, 0.5f, 10.0f);
 	DebugMenuAddVar("RTGI", "AO rays", &gnAORays, nil, 1, 1, 8, nil);

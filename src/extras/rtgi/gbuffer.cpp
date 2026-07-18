@@ -29,6 +29,9 @@ static int32 u_aoTex;
 static int32 u_rtgiParams;
 static int32 u_giTex;
 static int32 u_rtgiGIParams;
+static int32 u_gbParams;
+static int32 u_reflTex;
+static int32 u_rtgiReflParams;
 
 #define U(i) (rw::gl3::currentShader->uniformLocations[i])
 
@@ -44,6 +47,9 @@ GbufferInit(int width, int height)
 	u_rtgiParams = registerUniform("u_rtgiParams");
 	u_giTex = registerUniform("u_giTex");
 	u_rtgiGIParams = registerUniform("u_rtgiGIParams");
+	u_gbParams = registerUniform("u_gbParams");
+	u_reflTex = registerUniform("u_reflTex");
+	u_rtgiReflParams = registerUniform("u_rtgiReflParams");
 
 	{
 #include "shaders/obj/rtgiGbuf_vert.inc"
@@ -154,6 +160,10 @@ GbufferRender(void)
 		if(e->m_rwObject == nil || e->IsPed())
 			continue;
 
+		// vehicles are reflective (RT replacement for the env map look)
+		float refl[4] = { e->IsVehicle() ? 0.35f : 0.0f, 0.0f, 0.0f, 0.0f };
+		glUniform4fv(U(u_gbParams), 1, refl);
+
 		if(RwObjectGetType(e->m_rwObject) == rpATOMIC)
 			gbufDrawAtomic((rw::Atomic*)e->m_rwObject);
 		else{
@@ -186,9 +196,14 @@ WorldRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 	glBindTexture(GL_TEXTURE_2D, gInterop.aoOutput.glTexture);
 	glActiveTexture(GL_TEXTURE4);
 	glBindTexture(GL_TEXTURE_2D, gInterop.giOutput.glTexture);
+	glActiveTexture(GL_TEXTURE5);
+	glBindTexture(GL_TEXTURE_2D, gInterop.reflOutput.glTexture);
 	glActiveTexture(GL_TEXTURE0);
 	glUniform1i(U(u_aoTex), 3);
 	glUniform1i(U(u_giTex), 4);
+	glUniform1i(U(u_reflTex), 5);
+	float reflParams[4] = { gbReflections ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f };
+	glUniform4fv(U(u_rtgiReflParams), 1, reflParams);
 	float shadowStrength = gbSunShadows ? (CTimeCycle::GetShadowStrength()/255.0f)*0.55f : 0.0f;
 	float params[4] = { gfAOStrength, 1.0f/gWidth, 1.0f/gHeight, shadowStrength };
 	glUniform4fv(U(u_rtgiParams), 1, params);

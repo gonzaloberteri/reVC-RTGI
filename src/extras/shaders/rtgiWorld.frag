@@ -1,6 +1,9 @@
 uniform sampler2D tex0;
 uniform sampler2D u_aoTex;
 uniform sampler2D u_giTex;
+uniform sampler2D u_reflTex;
+
+uniform vec4 u_rtgiReflParams;	// x = reflections enabled
 
 uniform vec4 u_rtgiParams;	// x = ao strength, y = 1/width, z = 1/height, w = sun shadow strength
 uniform vec4 u_rtgiGIParams;	// x = gi blend, y = gi exposure, z/w unused
@@ -30,6 +33,12 @@ main(void)
 
 	// ray traced shadow (vehicles only for now; replaces the blob shadows)
 	color.rgb *= mix(1.0 - u_rtgiParams.w, 1.0, rt.g);
+
+	// ray traced reflections (wet roads etc.)
+	if(u_rtgiReflParams.x > 0.5){
+		vec4 refl = texture(u_reflTex, uv);
+		color.rgb = mix(color.rgb, refl.rgb, refl.a);
+	}
 
 	color.rgb = mix(u_fogColor.rgb, color.rgb, v_fog);
 	DoAlphaTest(color.a);

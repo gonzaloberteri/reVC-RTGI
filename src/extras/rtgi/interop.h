@@ -37,6 +37,7 @@ struct InteropState
 	SharedImage rtOutput;	// RGBA16F debug/trace output
 	SharedImage aoOutput;	// RG8: r = AO visibility, g = sun visibility (M4)
 	SharedImage giOutput;	// RGBA16F accumulated diffuse GI radiance
+	SharedImage reflOutput;	// RGBA16F reflections, a = reflectivity
 
 	VkSampler sampler;	// nearest, for sampling the G-buffer in compute
 

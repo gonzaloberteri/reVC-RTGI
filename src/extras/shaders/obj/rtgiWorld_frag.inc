@@ -2,6 +2,9 @@ const char *rtgiWorld_frag_src =
 "uniform sampler2D tex0;\n"
 "uniform sampler2D u_aoTex;\n"
 "uniform sampler2D u_giTex;\n"
+"uniform sampler2D u_reflTex;\n"
+
+"uniform vec4 u_rtgiReflParams;	// x = reflections enabled\n"
 
 "uniform vec4 u_rtgiParams;	// x = ao strength, y = 1/width, z = 1/height, w = sun shadow strength\n"
 "uniform vec4 u_rtgiGIParams;	// x = gi blend, y = gi exposure, z/w unused\n"
@@ -31,6 +34,12 @@ const char *rtgiWorld_frag_src =
 
 "	// ray traced shadow (vehicles only for now; replaces the blob shadows)\n"
 "	color.rgb *= mix(1.0 - u_rtgiParams.w, 1.0, rt.g);\n"
+
+"	// ray traced reflections (wet roads etc.)\n"
+"	if(u_rtgiReflParams.x > 0.5){\n"
+"		vec4 refl = texture(u_reflTex, uv);\n"
+"		color.rgb = mix(color.rgb, refl.rgb, refl.a);\n"
+"	}\n"
 
 "	color.rgb = mix(u_fogColor.rgb, color.rgb, v_fog);\n"
 "	DoAlphaTest(color.a);\n"
