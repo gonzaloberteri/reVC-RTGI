@@ -266,6 +266,7 @@ project "reVC"
 		defines { "VK_USE_PLATFORM_WIN32_KHR" }	-- volk needs this for the win32 external handle entry points
 		includedirs { "vendor/Vulkan-Headers/include" }
 		includedirs { "vendor/volk" }
+		includedirs { "vendor/VulkanMemoryAllocator/include" }
 		includedirs { "src/extras/rtgi" }
 		includedirs { path.join(Librw, "src/gl") }
 		filter "platforms:win-amd64-librw_gl3_glfw*"

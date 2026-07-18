@@ -10,6 +10,10 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+#include "blas.h"
+#include "tlas.h"
+#include "passes.h"
+
 #include "common.h"
 #include "rtgi.h"
 #include "skeleton.h"
@@ -37,10 +41,13 @@ RtgiLog(const char *fmt, ...)
 }
 
 bool gbRayTracedGI = true;
-int32 gnDebugView = DEBUGVIEW_INTEROP;	// M1 default: show the interop proof
+int32 gnDebugView = DEBUGVIEW_RT_NORMALS;	// M2 default: show the RT scene
 
 static bool initialised;
 static uint32 frameCounter;
+// a VK submit happened this frame and GL must signal it back, regardless of
+// what the debug menu did to the toggles in between
+static bool gFrameSubmitted;
 
 // --- debug blit ---------------------------------------------------------------
 
@@ -128,6 +135,13 @@ Initialise(void)
 		goto fail;
 	if(!blitCreate())
 		goto fail;
+	if(gVk.hasRayTracing){
+		// before any world geometry loads, so streamed-out geometry
+		// frees its BLAS automatically
+		BlasRegisterPlugin();
+		if(!BlasInit() || !TlasInit() || !PassesInit())
+			goto fail;
+	}
 
 	initialised = true;
 	RtgiLog("RTGI: initialised\n");
@@ -144,6 +158,11 @@ Shutdown(void)
 {
 	if(!initialised)
 		return;
+	if(gVk.hasRayTracing){
+		PassesShutdown();
+		TlasShutdown();
+		BlasShutdown();
+	}
 	blitDestroy();
 	InteropDestroy();
 	VkContextDestroy();
@@ -168,36 +187,75 @@ RenderFrame(void)
 
 	VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
-	VkImageMemoryBarrier toClear = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-	toClear.srcAccessMask = 0;
-	toClear.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	toClear.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	toClear.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	toClear.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	toClear.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	toClear.image = gInterop.rtOutput.image;
-	toClear.subresourceRange = range;
-	vkCmdPipelineBarrier(gVk.cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-		0, 0, nullptr, 0, nullptr, 1, &toClear);
+	bool wantTrace = gVk.hasRayTracing;
+	bool traced = false;
+	if(wantTrace){
+		BlasBeginFrame();
+		TlasCollect(gVk.cmdBuf);	// walks game world, queues BLAS builds
+		traced = TlasBuild(gVk.cmdBuf);
+	}
 
-	// M1 interop proof: an animated clear color written by Vulkan every frame
-	float t = frameCounter * 0.02f;
-	VkClearColorValue color;
-	color.float32[0] = 0.5f + 0.5f*sinf(t);
-	color.float32[1] = 0.5f + 0.5f*sinf(t + 2.094f);
-	color.float32[2] = 0.5f + 0.5f*sinf(t + 4.189f);
-	color.float32[3] = 1.0f;
-	vkCmdClearColorImage(gVk.cmdBuf, gInterop.rtOutput.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &range);
+	if(traced){
+		// image to GENERAL for compute writes
+		VkImageMemoryBarrier toGeneral = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+		toGeneral.srcAccessMask = 0;
+		toGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		toGeneral.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		toGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toGeneral.image = gInterop.rtOutput.image;
+		toGeneral.subresourceRange = range;
+		vkCmdPipelineBarrier(gVk.cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			0, 0, nullptr, 0, nullptr, 1, &toGeneral);
 
-	VkImageMemoryBarrier toGeneral = toClear;
-	toGeneral.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	toGeneral.dstAccessMask = 0;
-	toGeneral.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-	vkCmdPipelineBarrier(gVk.cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-		0, 0, nullptr, 0, nullptr, 1, &toGeneral);
+		uint32_t mode = 1;
+		if(gnDebugView == DEBUGVIEW_RT_DEPTH) mode = 2;
+		else if(gnDebugView == DEBUGVIEW_RT_INSTANCES) mode = 3;
+		PassesTracePrimary(gVk.cmdBuf, mode, frameCounter);
+
+		VkImageMemoryBarrier afterTrace = toGeneral;
+		afterTrace.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		afterTrace.dstAccessMask = 0;
+		afterTrace.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		afterTrace.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		vkCmdPipelineBarrier(gVk.cmdBuf, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+			0, 0, nullptr, 0, nullptr, 1, &afterTrace);
+	}else{
+		// fallback / M1 interop proof: animated clear
+		VkImageMemoryBarrier toClear = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+		toClear.srcAccessMask = 0;
+		toClear.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		toClear.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		toClear.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		toClear.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toClear.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toClear.image = gInterop.rtOutput.image;
+		toClear.subresourceRange = range;
+		vkCmdPipelineBarrier(gVk.cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			0, 0, nullptr, 0, nullptr, 1, &toClear);
+
+		float t = frameCounter * 0.02f;
+		VkClearColorValue color;
+		color.float32[0] = 0.5f + 0.5f*sinf(t);
+		color.float32[1] = 0.5f + 0.5f*sinf(t + 2.094f);
+		color.float32[2] = 0.5f + 0.5f*sinf(t + 4.189f);
+		color.float32[3] = 1.0f;
+		vkCmdClearColorImage(gVk.cmdBuf, gInterop.rtOutput.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &range);
+
+		VkImageMemoryBarrier toGeneral = toClear;
+		toGeneral.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		toGeneral.dstAccessMask = 0;
+		toGeneral.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		vkCmdPipelineBarrier(gVk.cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+			0, 0, nullptr, 0, nullptr, 1, &toGeneral);
+	}
 
 	vkEndCommandBuffer(gVk.cmdBuf);
+
+	if(traced && (frameCounter % 300) == 0)
+		RtgiLog("RTGI: %u TLAS instances, %d BLASes\n", TlasInstanceCount(), BlasCount());
 
 	VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 	VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
@@ -215,6 +273,7 @@ RenderFrame(void)
 
 	vkQueueSubmit(gVk.queue, 1, &submit, gVk.frameFence);
 	frameCounter++;
+	gFrameSubmitted = true;
 
 	// GL: block the pipe until VK results are ready (server-side)
 	InteropWaitRtDone();
@@ -223,10 +282,13 @@ RenderFrame(void)
 void
 DebugRender(void)
 {
-	if(!initialised || !gbRayTracedGI)
+	// keyed off gFrameSubmitted, not the toggles: the debug menu can flip
+	// them between RenderFrame and here, and the semaphore pair must stay
+	// balanced or the next submit deadlocks
+	if(!initialised || !gFrameSubmitted)
 		return;
 
-	if(gnDebugView == DEBUGVIEW_INTEROP){
+	if(gnDebugView != DEBUGVIEW_OFF){
 		GLint prevProgram, prevVAO, prevActiveTex, prevTex0;
 		GLint prevViewport[4];
 		GLboolean depthWasOn = glIsEnabled(GL_DEPTH_TEST);
@@ -259,12 +321,13 @@ DebugRender(void)
 
 	// GL has now consumed this frame's output; let VK reuse it
 	InteropSignalGlDone();
+	gFrameSubmitted = false;
 }
 
 void
 AddDebugMenuEntries(void)
 {
-	static const char *debugViews[] = { "Off", "Interop" };
+	static const char *debugViews[] = { "Off", "Interop", "RT Normals", "RT Depth", "RT Instances" };
 	DebugMenuAddVarBool8("RTGI", "Ray traced GI", (int8_t*)&gbRayTracedGI, nil);
 	DebugMenuAddVar("RTGI", "Debug view", &gnDebugView, nil, 1, 0, DEBUGVIEW_MAX-1, debugViews);
 }

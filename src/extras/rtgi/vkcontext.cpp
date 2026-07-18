@@ -186,6 +186,29 @@ VkContextCreate(const uint8_t *glDeviceLUID)
 	if(vkCreateFence(gVk.device, &fenceInfo, nullptr, &gVk.frameFence) != VK_SUCCESS)
 		return false;
 
+	if(gVk.hasRayTracing){
+		gVk.accelProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR;
+		VkPhysicalDeviceProperties2 props2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
+		props2.pNext = &gVk.accelProps;
+		vkGetPhysicalDeviceProperties2(gVk.physicalDevice, &props2);
+	}
+
+	// VMA on top of volk's function pointers
+	VmaVulkanFunctions vmaFuncs = {};
+	vmaFuncs.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+	vmaFuncs.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
+	VmaAllocatorCreateInfo vmaInfo = {};
+	vmaInfo.physicalDevice = gVk.physicalDevice;
+	vmaInfo.device = gVk.device;
+	vmaInfo.instance = gVk.instance;
+	vmaInfo.vulkanApiVersion = VK_API_VERSION_1_2;
+	vmaInfo.pVulkanFunctions = &vmaFuncs;
+	vmaInfo.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+	if(vmaCreateAllocator(&vmaInfo, &gVk.allocator) != VK_SUCCESS){
+		RtgiLog("RTGI: vmaCreateAllocator failed\n");
+		return false;
+	}
+
 	RtgiLog("RTGI: Vulkan device ready (ray tracing: %s)\n", gVk.hasRayTracing ? "yes" : "NO");
 	gVk.valid = true;
 	return true;
@@ -196,6 +219,7 @@ VkContextDestroy(void)
 {
 	if(gVk.device){
 		vkDeviceWaitIdle(gVk.device);
+		if(gVk.allocator) vmaDestroyAllocator(gVk.allocator);
 		if(gVk.frameFence) vkDestroyFence(gVk.device, gVk.frameFence, nullptr);
 		if(gVk.cmdPool) vkDestroyCommandPool(gVk.device, gVk.cmdPool, nullptr);
 		vkDestroyDevice(gVk.device, nullptr);
@@ -203,6 +227,56 @@ VkContextDestroy(void)
 	if(gVk.instance)
 		vkDestroyInstance(gVk.instance, nullptr);
 	memset(&gVk, 0, sizeof(gVk));
+}
+
+// --- buffer helper ------------------------------------------------------------
+
+bool
+BufferCreate(GpuBuffer *b, VkDeviceSize size, VkBufferUsageFlags usage, bool hostVisible)
+{
+	memset(b, 0, sizeof(*b));
+
+	VkBufferCreateInfo bufInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	bufInfo.size = size;
+	bufInfo.usage = usage;
+
+	VmaAllocationCreateInfo allocInfo = {};
+	allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+	if(hostVisible)
+		allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+			VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+	VmaAllocationInfo outInfo;
+	if(vmaCreateBuffer(gVk.allocator, &bufInfo, &allocInfo, &b->buf, &b->alloc, &outInfo) != VK_SUCCESS){
+		RtgiLog("RTGI: buffer allocation failed (%llu bytes)\n", (unsigned long long)size);
+		return false;
+	}
+	b->size = size;
+	b->mapped = outInfo.pMappedData;
+
+	if(usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT){
+		VkBufferDeviceAddressInfo addrInfo = { VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO };
+		addrInfo.buffer = b->buf;
+		b->addr = vkGetBufferDeviceAddress(gVk.device, &addrInfo);
+	}
+	return true;
+}
+
+void
+BufferDestroy(GpuBuffer *b)
+{
+	if(b->buf)
+		vmaDestroyBuffer(gVk.allocator, b->buf, b->alloc);
+	memset(b, 0, sizeof(*b));
+}
+
+bool
+BufferEnsure(GpuBuffer *b, VkDeviceSize size, VkBufferUsageFlags usage, bool hostVisible)
+{
+	if(b->buf && b->size >= size)
+		return true;
+	BufferDestroy(b);
+	return BufferCreate(b, size + size/2, usage, hostVisible);
 }
 
 uint32_t

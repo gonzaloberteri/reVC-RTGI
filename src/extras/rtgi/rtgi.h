@@ -10,6 +10,9 @@ namespace RayTracedGI {
 enum eDebugView {
 	DEBUGVIEW_OFF = 0,
 	DEBUGVIEW_INTEROP,	// show the VK-written shared image (M1 interop proof)
+	DEBUGVIEW_RT_NORMALS,	// primary rays: geometric normals
+	DEBUGVIEW_RT_DEPTH,	// primary rays: depth
+	DEBUGVIEW_RT_INSTANCES,	// primary rays: instance id colors
 	DEBUGVIEW_MAX
 };
 
