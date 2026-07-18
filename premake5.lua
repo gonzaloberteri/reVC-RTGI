@@ -150,7 +150,7 @@ workspace "reVC"
 		end
 		
 	filter "platforms:*librw_gl3_glfw*"
-		defines { "RW_GL3" }
+		defines { "RW_GL3", "LIBRW_GLFW" }
 		if(not _OPTIONS["with-librw"]) then
 			libdirs { path.join(Librw, "lib/%{getsys(cfg.system)}-%{getarch(cfg.architecture)}-gl3/%{cfg.buildcfg}") }
 		end

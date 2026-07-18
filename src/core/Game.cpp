@@ -244,10 +244,13 @@ CGame::InitialiseRenderWare(void)
 	CreateDebugFont();
 
 #ifdef LIBRW
+	// librw renamed modulateEnvMap into these two flags
 #ifdef PS2_MATFX
-	rw::MatFX::modulateEnvMap = true;
+	rw::MatFX::envMapApplyLight = true;
+	rw::MatFX::envMapUseMatColor = true;
 #else
-	rw::MatFX::modulateEnvMap = false;
+	rw::MatFX::envMapApplyLight = false;
+	rw::MatFX::envMapUseMatColor = false;
 #endif
 #else
 #ifdef PS2_MATFX
