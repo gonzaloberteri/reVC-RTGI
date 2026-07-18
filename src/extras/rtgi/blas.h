@@ -50,6 +50,10 @@ BlasEntry *BlasGetOrBuild(rw::Geometry *geo, VkCommandBuffer cmd);
 // upload the geometry record table if it changed; returns the SSBO
 GpuBuffer *BlasRecordBuffer(void);
 
+// allocate a persistent record slot (for dynamic geometry like skinned peds);
+// returns its index, or UINT32_MAX when full
+uint32_t BlasAllocRecord(const GeomRecord &rec);
+
 int32_t BlasCount(void);
 
 }

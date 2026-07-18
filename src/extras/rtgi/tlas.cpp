@@ -29,6 +29,193 @@ static GpuBuffer gTlasScratch;
 static VkAccelerationStructureKHR gTlas;
 static uint32_t gNumInstances;
 
+// --- skinned peds -------------------------------------------------------------
+// CPU-skinned into a per-slot buffer each frame, small BLAS rebuilt per frame.
+enum {
+	MAX_PED_SLOTS = 24,
+	PED_MAX_VERTS = 4096,
+	PED_MAX_TRIS = 8192,
+	PED_RADIUS = 60,
+};
+struct PedSlot
+{
+	GpuBuffer vtxBuf;	// host-visible, object-space posed positions
+	GpuBuffer idxBuf;
+	GpuBuffer asBuf;
+	GpuBuffer scratchBuf;
+	VkAccelerationStructureKHR as;
+	VkDeviceAddress asAddr;
+	uint32_t record;	// persistent GeomRecord slot
+	bool ready;
+};
+static PedSlot gPedSlots[MAX_PED_SLOTS];
+static int gNumPedSlotsUsed;	// per frame
+
+static bool
+pedSlotInit(PedSlot *s)
+{
+	VkBufferUsageFlags inputUsage =
+		VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+		VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+	if(!BufferCreate(&s->vtxBuf, PED_MAX_VERTS * 3*sizeof(float), inputUsage, true) ||
+	   !BufferCreate(&s->idxBuf, PED_MAX_TRIS * 3*sizeof(uint32_t), inputUsage, true))
+		return false;
+
+	// worst-case sized BLAS + scratch, reused every frame
+	VkAccelerationStructureGeometryKHR g = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
+	g.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+	g.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+	g.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+	g.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+	g.geometry.triangles.vertexStride = 3*sizeof(float);
+	g.geometry.triangles.maxVertex = PED_MAX_VERTS - 1;
+	g.geometry.triangles.indexType = VK_INDEX_TYPE_UINT32;
+
+	VkAccelerationStructureBuildGeometryInfoKHR build = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
+	build.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+	build.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR;
+	build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+	build.geometryCount = 1;
+	build.pGeometries = &g;
+	uint32_t maxPrims = PED_MAX_TRIS;
+	VkAccelerationStructureBuildSizesInfoKHR sizes = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
+	vkGetAccelerationStructureBuildSizesKHR(gVk.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+		&build, &maxPrims, &sizes);
+
+	if(!BufferCreate(&s->asBuf, sizes.accelerationStructureSize,
+	   VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, false) ||
+	   !BufferCreate(&s->scratchBuf, sizes.buildScratchSize,
+	   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, false))
+		return false;
+
+	VkAccelerationStructureCreateInfoKHR asInfo = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
+	asInfo.buffer = s->asBuf.buf;
+	asInfo.size = sizes.accelerationStructureSize;
+	asInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+	if(vkCreateAccelerationStructureKHR(gVk.device, &asInfo, nullptr, &s->as) != VK_SUCCESS)
+		return false;
+	VkAccelerationStructureDeviceAddressInfoKHR addrInfo = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR };
+	addrInfo.accelerationStructure = s->as;
+	s->asAddr = vkGetAccelerationStructureDeviceAddressKHR(gVk.device, &addrInfo);
+
+	GeomRecord rec;
+	rec.vtxAddr = s->vtxBuf.addr;
+	rec.idxAddr = s->idxBuf.addr;
+	rec.albedo = 0xFF707070u;	// generic clothing gray for GI bounces
+	rec.pad = 0;
+	s->record = BlasAllocRecord(rec);
+	if(s->record == UINT32_MAX)
+		return false;
+
+	s->ready = true;
+	return true;
+}
+
+static void
+pedSlotDestroy(PedSlot *s)
+{
+	if(s->as)
+		vkDestroyAccelerationStructureKHR(gVk.device, s->as, nullptr);
+	BufferDestroy(&s->vtxBuf);
+	BufferDestroy(&s->idxBuf);
+	BufferDestroy(&s->asBuf);
+	BufferDestroy(&s->scratchBuf);
+	memset(s, 0, sizeof(*s));
+}
+
+// pose the ped's skinned atomic into the slot's vertex buffer (object space,
+// same math as librw's uploadSkinMatrices) and rebuild its BLAS
+static bool
+pedSkinIntoSlot(rw::Atomic *atomic, PedSlot *s, VkCommandBuffer cmd, uint32_t *numTrisOut)
+{
+	using namespace rw;
+
+	Geometry *geo = atomic->geometry;
+	Skin *skin = Skin::get(geo);
+	if(skin == nil || geo->numVertices > PED_MAX_VERTS || geo->numTriangles > PED_MAX_TRIS ||
+	   geo->triangles == nil || geo->morphTargets == nil)
+		return false;
+	HAnimHierarchy *hier = Skin::getHierarchy(atomic);
+	if(hier == nil || hier->matrices == nil || skin->numBones != hier->numNodes)
+		return false;
+
+	// compose object-space skinning matrices
+	static Matrix boneMats[128];
+	if(skin->numBones > 128)
+		return false;
+	Matrix *invMats = (Matrix*)skin->inverseMatrices;
+	if(hier->flags & HAnimHierarchy::LOCALSPACEMATRICES){
+		for(int32 i = 0; i < hier->numNodes; i++){
+			Matrix inv = invMats[i];
+			inv.flags = 0;
+			Matrix::mult(&boneMats[i], &inv, &hier->matrices[i]);
+		}
+	}else{
+		Matrix invAtmMat, tmp;
+		Matrix::invert(&invAtmMat, atomic->getFrame()->getLTM());
+		for(int32 i = 0; i < hier->numNodes; i++){
+			Matrix inv = invMats[i];
+			inv.flags = 0;
+			Matrix::mult(&tmp, &hier->matrices[i], &invAtmMat);
+			Matrix::mult(&boneMats[i], &inv, &tmp);
+		}
+	}
+
+	// skin positions
+	float *dst = (float*)s->vtxBuf.mapped;
+	V3d *src = geo->morphTargets[0].vertices;
+	for(int32 i = 0; i < geo->numVertices; i++){
+		V3d p = { 0.0f, 0.0f, 0.0f };
+		V3d v = src[i];
+		for(int32 w = 0; w < 4; w++){
+			float weight = skin->weights[i*4 + w];
+			if(weight == 0.0f)
+				continue;
+			Matrix *m = &boneMats[skin->indices[i*4 + w]];
+			p.x += weight * (m->right.x*v.x + m->up.x*v.y + m->at.x*v.z + m->pos.x);
+			p.y += weight * (m->right.y*v.x + m->up.y*v.y + m->at.y*v.z + m->pos.y);
+			p.z += weight * (m->right.z*v.x + m->up.z*v.y + m->at.z*v.z + m->pos.z);
+		}
+		dst[i*3+0] = p.x; dst[i*3+1] = p.y; dst[i*3+2] = p.z;
+	}
+
+	uint32_t *idx = (uint32_t*)s->idxBuf.mapped;
+	for(int32 i = 0; i < geo->numTriangles; i++){
+		idx[i*3+0] = geo->triangles[i].v[0];
+		idx[i*3+1] = geo->triangles[i].v[1];
+		idx[i*3+2] = geo->triangles[i].v[2];
+	}
+	*numTrisOut = geo->numTriangles;
+
+	// rebuild the BLAS in place
+	VkAccelerationStructureGeometryKHR g = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
+	g.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+	g.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+	g.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+	g.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+	g.geometry.triangles.vertexData.deviceAddress = s->vtxBuf.addr;
+	g.geometry.triangles.vertexStride = 3*sizeof(float);
+	g.geometry.triangles.maxVertex = geo->numVertices - 1;
+	g.geometry.triangles.indexType = VK_INDEX_TYPE_UINT32;
+	g.geometry.triangles.indexData.deviceAddress = s->idxBuf.addr;
+
+	VkAccelerationStructureBuildGeometryInfoKHR build = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
+	build.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+	build.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR;
+	build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+	build.geometryCount = 1;
+	build.pGeometries = &g;
+	build.dstAccelerationStructure = s->as;
+	build.scratchData.deviceAddress = s->scratchBuf.addr;
+
+	VkAccelerationStructureBuildRangeInfoKHR range = {};
+	range.primitiveCount = *numTrisOut;
+	const VkAccelerationStructureBuildRangeInfoKHR *pRange = &range;
+	vkCmdBuildAccelerationStructuresKHR(cmd, 1, &build, &pRange);
+	return true;
+}
+
 bool
 TlasInit(void)
 {
@@ -43,6 +230,8 @@ TlasShutdown(void)
 	if(gTlas)
 		vkDestroyAccelerationStructureKHR(gVk.device, gTlas, nullptr);
 	gTlas = VK_NULL_HANDLE;
+	for(int i = 0; i < MAX_PED_SLOTS; i++)
+		pedSlotDestroy(&gPedSlots[i]);
 	BufferDestroy(&gInstanceBuf);
 	BufferDestroy(&gTlasBuf);
 	BufferDestroy(&gTlasScratch);
@@ -83,6 +272,52 @@ emitAtomic(rw::Atomic *atomic, VkCommandBuffer cmd, uint8_t mask)
 	gNumInstances++;
 }
 
+// skinned peds: CPU-pose into a slot, rebuild its BLAS, emit an instance
+static void
+emitPed(CEntity *e, VkCommandBuffer cmd)
+{
+	if(gNumPedSlotsUsed >= MAX_PED_SLOTS || gNumInstances >= MAX_INSTANCES)
+		return;
+	CVector d = e->GetPosition() - TheCamera.GetPosition();
+	if(d.MagnitudeSqr() > (float)(PED_RADIUS*PED_RADIUS))
+		return;
+	if(RwObjectGetType(e->m_rwObject) != rpCLUMP)
+		return;
+
+	// first skinned atomic of the clump
+	rw::Clump *clump = (rw::Clump*)e->m_rwObject;
+	rw::Atomic *atomic = nil;
+	FORLIST(lnk, clump->atomics){
+		rw::Atomic *a = rw::Atomic::fromClump(lnk);
+		if((a->object.object.flags & rw::Atomic::RENDER) && a->geometry &&
+		   rw::Skin::get(a->geometry)){
+			atomic = a;
+			break;
+		}
+	}
+	if(atomic == nil)
+		return;
+
+	PedSlot *s = &gPedSlots[gNumPedSlotsUsed];
+	if(!s->ready && !pedSlotInit(s))
+		return;
+
+	uint32_t numTris = 0;
+	if(!pedSkinIntoSlot(atomic, s, cmd, &numTris))
+		return;
+	gNumPedSlotsUsed++;
+
+	VkAccelerationStructureInstanceKHR *inst =
+		(VkAccelerationStructureInstanceKHR*)gInstanceBuf.mapped + gNumInstances;
+	memset(inst, 0, sizeof(*inst));
+	matrixToVk(&inst->transform, atomic->getFrame()->getLTM());
+	inst->instanceCustomIndex = s->record;
+	inst->mask = MASK_VEHICLES;	// dynamic casters: RT shadows, GI, reflections
+	inst->flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+	inst->accelerationStructureReference = s->asAddr;
+	gNumInstances++;
+}
+
 static void
 emitEntity(CEntity *e, VkCommandBuffer cmd)
 {
@@ -90,8 +325,10 @@ emitEntity(CEntity *e, VkCommandBuffer cmd)
 		return;
 	if(!IsAreaVisible(e->m_area))
 		return;	// interiors: only the current area traces
-	if(e->IsPed())
-		return;	// GPU-skinned; excluded until M9
+	if(e->IsPed()){
+		emitPed(e, cmd);
+		return;
+	}
 
 	// vehicles get their own visibility mask so shadow rays can hit only
 	// them (RT replacement for the blob shadows, without double-shadowing
@@ -121,6 +358,7 @@ void
 TlasCollect(VkCommandBuffer cmd)
 {
 	gNumInstances = 0;
+	gNumPedSlotsUsed = 0;
 
 	static std::unordered_set<CEntity*> seen;
 	seen.clear();
@@ -139,6 +377,7 @@ TlasCollect(VkCommandBuffer cmd)
 		ENTITYLIST_BUILDINGS, ENTITYLIST_BUILDINGS_OVERLAP,
 		ENTITYLIST_OBJECTS, ENTITYLIST_OBJECTS_OVERLAP,
 		ENTITYLIST_VEHICLES, ENTITYLIST_VEHICLES_OVERLAP,
+		ENTITYLIST_PEDS, ENTITYLIST_PEDS_OVERLAP,
 		ENTITYLIST_DUMMIES, ENTITYLIST_DUMMIES_OVERLAP,
 	};
 

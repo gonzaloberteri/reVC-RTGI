@@ -387,6 +387,16 @@ BlasCount(void)
 	return (int32_t)gBlasMap.size();
 }
 
+uint32_t
+BlasAllocRecord(const GeomRecord &rec)
+{
+	if(gNumRecords >= MAX_RECORDS)
+		return UINT32_MAX;
+	gRecords[gNumRecords] = rec;
+	gRecordsDirty = true;
+	return gNumRecords++;
+}
+
 }
 
 #endif

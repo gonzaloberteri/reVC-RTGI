@@ -48,7 +48,7 @@ void main()
 
 	vec2 uv = (vec2(px) + 0.5) / vec2(pc.size);
 	float u = uv.x*2.0 - 1.0;
-	float v = 1.0 - uv.y*2.0;
+	float v = uv.y*2.0 - 1.0;
 	// RW camera space: right vector points screen-left, hence the negation
 	vec3 dir = normalize(pc.camFwd.xyz - pc.camRight.xyz*(u*pc.camRight.w) + pc.camUp.xyz*(v*pc.camUp.w));
 

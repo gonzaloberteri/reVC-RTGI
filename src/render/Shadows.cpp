@@ -866,6 +866,12 @@ CShadows::StoreShadowForPed(CPed *pPed, float fDisplacementX, float fDisplacemen
 {
 	ASSERT(pPed != nil);
 
+#ifdef RTGI
+	// ray traced shadows replace the ped blobs too
+	if ( RayTracedGI::ReplacingVehicleShadows() )
+		return;
+#endif
+
 	if ( pPed->bIsVisible )
 	{
 		if ( !(pPed->bInVehicle && pPed->m_nPedState != PED_DRAG_FROM_CAR && pPed->m_nPedState != PED_EXIT_CAR) )
