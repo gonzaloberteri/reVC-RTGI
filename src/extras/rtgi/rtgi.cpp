@@ -58,6 +58,7 @@ bool gbSunShadows = true;
 bool gbGIEnable = true;
 float gfGIBlend = 0.6f;
 float gfGIExposure = 1.0f;
+bool gbDenoise = true;
 
 static bool initialised;
 static uint32 frameCounter;
@@ -220,6 +221,7 @@ readConfigFile(void)
 		else if(sscanf(line, "gi=%d", &ival) == 1) gbGIEnable = ival != 0;
 		else if(sscanf(line, "giblend=%f", &fval) == 1) gfGIBlend = fval;
 		else if(sscanf(line, "giexposure=%f", &fval) == 1) gfGIExposure = fval;
+		else if(sscanf(line, "denoise=%d", &ival) == 1) gbDenoise = ival != 0;
 		else if(sscanf(line, "shotframes=%d", &ival) == 1) gnShotFrames = ival;
 		else if(sscanf(line, "tp=%f,%f,%f", &gTeleport[0], &gTeleport[1], &gTeleport[2]) == 3) gWantTeleport = true;
 		else if(sscanf(line, "hour=%d", &ival) == 1) gnForceHour = ival;
@@ -383,6 +385,8 @@ RenderFrame(void)
 					0, 0, nullptr, 0, nullptr, 1, &giToGeneral);
 				PassesTraceGI(gVk.cmdBuf, frameCounter, gResetGIHistory);
 				gResetGIHistory = false;
+				if(gbDenoise)
+					PassesDenoiseGI(gVk.cmdBuf);
 			}
 		}
 
@@ -539,6 +543,7 @@ AddDebugMenuEntries(void)
 	DebugMenuAddVarBool8("RTGI", "Diffuse GI", (int8_t*)&gbGIEnable, nil);
 	DebugMenuAddVar("RTGI", "GI blend", &gfGIBlend, nil, 0.05f, 0.0f, 1.0f);
 	DebugMenuAddVar("RTGI", "GI exposure", &gfGIExposure, nil, 0.1f, 0.1f, 5.0f);
+	DebugMenuAddVarBool8("RTGI", "GI denoise", (int8_t*)&gbDenoise, nil);
 	DebugMenuAddVar("RTGI", "AO strength", &gfAOStrength, nil, 0.05f, 0.0f, 1.0f);
 	DebugMenuAddVar("RTGI", "AO radius", &gfAORadius, nil, 0.5f, 0.5f, 10.0f);
 	DebugMenuAddVar("RTGI", "AO rays", &gnAORays, nil, 1, 1, 8, nil);

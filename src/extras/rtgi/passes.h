@@ -19,6 +19,9 @@ void PassesTraceAO(VkCommandBuffer cmd, uint32_t frame, uint32_t numRays, float 
 // one-bounce diffuse GI + temporal accumulation into the shared GI image
 bool PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory);
 
+// a-trous spatial filter over the accumulated GI, output into the shared image
+void PassesDenoiseGI(VkCommandBuffer cmd);
+
 }
 
 #endif

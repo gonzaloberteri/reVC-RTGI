@@ -1,0 +1,62 @@
+#version 460
+
+// Edge-aware a-trous wavelet filter over the accumulated GI, guided by the
+// G-buffer depth and normals. Run 3 times with growing step size.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform sampler2D inColor;
+layout(binding = 1, rgba16f) uniform image2D outColor;
+layout(binding = 2) uniform sampler2D gbNormal;
+layout(binding = 3) uniform sampler2D gbDepth;
+
+layout(push_constant) uniform PC {
+	uvec2 size;
+	int step;
+	float pad;
+} pc;
+
+void main()
+{
+	ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+	if(px.x >= int(pc.size.x) || px.y >= int(pc.size.y))
+		return;
+
+	float centerDepth = texelFetch(gbDepth, px, 0).r;
+	vec3 centerNormal = texelFetch(gbNormal, px, 0).xyz;
+	vec3 centerColor = texelFetch(inColor, px, 0).rgb;
+
+	if(centerDepth <= 0.0){
+		imageStore(outColor, px, vec4(centerColor, 1.0));
+		return;
+	}
+	centerNormal = normalize(centerNormal);
+
+	const float kernel[3] = float[](3.0/8.0, 1.0/4.0, 1.0/16.0);
+
+	vec3 sum = vec3(0.0);
+	float wsum = 0.0;
+	for(int dy = -2; dy <= 2; dy++)
+	for(int dx = -2; dx <= 2; dx++){
+		ivec2 q = px + ivec2(dx, dy)*pc.step;
+		if(q.x < 0 || q.y < 0 || q.x >= int(pc.size.x) || q.y >= int(pc.size.y))
+			continue;
+		float qd = texelFetch(gbDepth, q, 0).r;
+		if(qd <= 0.0)
+			continue;
+		vec3 qn = texelFetch(gbNormal, q, 0).xyz;
+		vec3 qc = texelFetch(inColor, q, 0).rgb;
+
+		float w = kernel[max(abs(dx), abs(dy))];
+		// depth weight: relative difference
+		float dw = exp(-abs(qd - centerDepth) / (centerDepth*0.05 + 0.001));
+		// normal weight
+		float nw = pow(max(dot(centerNormal, normalize(qn)), 0.0), 16.0);
+		w = w * dw * nw;
+		sum += qc * w;
+		wsum += w;
+	}
+
+	vec3 result = wsum > 0.001 ? sum/wsum : centerColor;
+	imageStore(outColor, px, vec4(result, 1.0));
+}

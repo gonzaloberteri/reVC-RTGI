@@ -19,6 +19,7 @@
 #include "shaders/obj/ao_comp.inc"
 #include "shaders/obj/gi_comp.inc"
 #include "shaders/obj/temporal_comp.inc"
+#include "shaders/obj/atrous_comp.inc"
 
 namespace RayTracedGI {
 
@@ -100,9 +101,22 @@ static VkPipelineLayout gTemporalPipeLayout;
 static VkPipeline gTemporalPipeline;
 static VkDescriptorSet gTemporalDescSet;
 
+struct AtrousPushConstants
+{
+	uint32_t size[2];
+	int32_t step;
+	float pad;
+};
+
+static VkDescriptorSetLayout gAtrousSetLayout;
+static VkPipelineLayout gAtrousPipeLayout;
+static VkPipeline gAtrousPipeline;
+static VkDescriptorSet gAtrousDescSets[3];	// one per iteration
+
 static GpuImage gGiRaw;
 static GpuImage gGiAccum[2];
 static GpuImage gDepthHist[2];
+static GpuImage gAtrousScratch;
 static int gAccumIndex;
 static bool gGiImagesInitialised;	// UNDEFINED->GENERAL done
 static float gPrevCam[16];		// pos/right/up/fwd with vw in w
@@ -187,12 +201,12 @@ PassesInit(void)
 
 	VkDescriptorPoolSize poolSizes[4] = {
 		{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 8 },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 16 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 24 },
 		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8 },
-		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16 },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 32 },
 	};
 	VkDescriptorPoolCreateInfo dpInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-	dpInfo.maxSets = 8;
+	dpInfo.maxSets = 12;
 	dpInfo.poolSizeCount = 4;
 	dpInfo.pPoolSizes = poolSizes;
 	if(vkCreateDescriptorPool(gVk.device, &dpInfo, nullptr, &gDescPool) != VK_SUCCESS)
@@ -359,8 +373,52 @@ PassesInit(void)
 	   !ImageCreate(&gGiAccum[0], w, h, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage) ||
 	   !ImageCreate(&gGiAccum[1], w, h, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage) ||
 	   !ImageCreate(&gDepthHist[0], w, h, VK_FORMAT_R32_SFLOAT, giUsage) ||
-	   !ImageCreate(&gDepthHist[1], w, h, VK_FORMAT_R32_SFLOAT, giUsage))
+	   !ImageCreate(&gDepthHist[1], w, h, VK_FORMAT_R32_SFLOAT, giUsage) ||
+	   !ImageCreate(&gAtrousScratch, w, h, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage))
 		return false;
+
+	// --- a-trous denoiser ------------------------------------------------
+
+	{
+	VkDescriptorSetLayoutBinding b[4] = {};
+	VkDescriptorType types[4] = {
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// in
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// out
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// normal
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// depth
+	};
+	for(int i = 0; i < 4; i++){
+		b[i].binding = i;
+		b[i].descriptorType = types[i];
+		b[i].descriptorCount = 1;
+		b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	}
+	VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+	li.bindingCount = 4;
+	li.pBindings = b;
+	if(vkCreateDescriptorSetLayout(gVk.device, &li, nullptr, &gAtrousSetLayout) != VK_SUCCESS)
+		return false;
+	VkPushConstantRange pcr = {};
+	pcr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	pcr.size = sizeof(AtrousPushConstants);
+	VkPipelineLayoutCreateInfo pli = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+	pli.setLayoutCount = 1;
+	pli.pSetLayouts = &gAtrousSetLayout;
+	pli.pushConstantRangeCount = 1;
+	pli.pPushConstantRanges = &pcr;
+	if(vkCreatePipelineLayout(gVk.device, &pli, nullptr, &gAtrousPipeLayout) != VK_SUCCESS)
+		return false;
+	gAtrousPipeline = createComputePipeline(atrous_comp_spv, sizeof(atrous_comp_spv), gAtrousPipeLayout);
+	if(gAtrousPipeline == VK_NULL_HANDLE)
+		return false;
+	VkDescriptorSetLayout layouts[3] = { gAtrousSetLayout, gAtrousSetLayout, gAtrousSetLayout };
+	VkDescriptorSetAllocateInfo dsi = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+	dsi.descriptorPool = gDescPool;
+	dsi.descriptorSetCount = 3;
+	dsi.pSetLayouts = layouts;
+	if(vkAllocateDescriptorSets(gVk.device, &dsi, gAtrousDescSets) != VK_SUCCESS)
+		return false;
+	}
 
 	return true;
 }
@@ -368,6 +426,13 @@ PassesInit(void)
 void
 PassesShutdown(void)
 {
+	ImageDestroy(&gAtrousScratch);
+	if(gAtrousPipeline) vkDestroyPipeline(gVk.device, gAtrousPipeline, nullptr);
+	if(gAtrousPipeLayout) vkDestroyPipelineLayout(gVk.device, gAtrousPipeLayout, nullptr);
+	if(gAtrousSetLayout) vkDestroyDescriptorSetLayout(gVk.device, gAtrousSetLayout, nullptr);
+	gAtrousPipeline = VK_NULL_HANDLE;
+	gAtrousPipeLayout = VK_NULL_HANDLE;
+	gAtrousSetLayout = VK_NULL_HANDLE;
 	ImageDestroy(&gGiRaw);
 	ImageDestroy(&gGiAccum[0]);
 	ImageDestroy(&gGiAccum[1]);
@@ -554,9 +619,10 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 
 	// first use: everything to GENERAL once
 	if(!gGiImagesInitialised){
-		VkImageMemoryBarrier barriers[4] = {};
-		VkImage images[4] = { gGiRaw.image, gGiAccum[0].image, gGiAccum[1].image, gDepthHist[0].image };
-		for(int i = 0; i < 4; i++){
+		VkImageMemoryBarrier barriers[6] = {};
+		VkImage images[6] = { gGiRaw.image, gGiAccum[0].image, gGiAccum[1].image,
+			gDepthHist[0].image, gDepthHist[1].image, gAtrousScratch.image };
+		for(int i = 0; i < 6; i++){
 			barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 			barriers[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 			barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -567,7 +633,7 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 			barriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 		}
 		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			0, 0, nullptr, 0, nullptr, 4, barriers);
+			0, 0, nullptr, 0, nullptr, 6, barriers);
 		gGiImagesInitialised = true;
 		resetHistory = true;
 	}
@@ -686,6 +752,60 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 	gHavePrevCam = true;
 	gAccumIndex = prev;
 	return true;
+}
+
+void
+PassesDenoiseGI(VkCommandBuffer cmd)
+{
+	int w = gInterop.giOutput.width, h = gInterop.giOutput.height;
+	// note: gAccumIndex was flipped after the temporal pass; the image the
+	// temporal pass just wrote is the new "prev"
+	GpuImage *accum = &gGiAccum[1 - gAccumIndex];
+
+	// temporal write -> denoiser read
+	VkMemoryBarrier memBarrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+	memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+	// iteration i/o: accum -> scratch -> giRaw -> shared giOutput
+	VkImageView srcs[3] = { accum->view, gAtrousScratch.view, gGiRaw.view };
+	VkImageView dsts[3] = { gAtrousScratch.view, gGiRaw.view, gInterop.giOutput.view };
+	int steps[3] = { 1, 2, 4 };
+
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gAtrousPipeline);
+	for(int i = 0; i < 3; i++){
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+
+		VkDescriptorImageInfo inInfo = { gInterop.sampler, srcs[i], VK_IMAGE_LAYOUT_GENERAL };
+		VkDescriptorImageInfo outInfo = { VK_NULL_HANDLE, dsts[i], VK_IMAGE_LAYOUT_GENERAL };
+		VkDescriptorImageInfo normalInfo = { gInterop.sampler, gInterop.gbNormal.view, VK_IMAGE_LAYOUT_GENERAL };
+		VkDescriptorImageInfo depthInfo = { gInterop.sampler, gInterop.gbDepth.view, VK_IMAGE_LAYOUT_GENERAL };
+		VkWriteDescriptorSet writes[4] = {};
+		const VkDescriptorImageInfo *infos[4] = { &inInfo, &outInfo, &normalInfo, &depthInfo };
+		VkDescriptorType types[4] = {
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		};
+		for(int j = 0; j < 4; j++){
+			writes[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[j].dstSet = gAtrousDescSets[i];
+			writes[j].dstBinding = j;
+			writes[j].descriptorCount = 1;
+			writes[j].descriptorType = types[j];
+			writes[j].pImageInfo = infos[j];
+		}
+		vkUpdateDescriptorSets(gVk.device, 4, writes, 0, nullptr);
+
+		AtrousPushConstants pc = {};
+		pc.size[0] = w; pc.size[1] = h;
+		pc.step = steps[i];
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gAtrousPipeLayout, 0, 1, &gAtrousDescSets[i], 0, nullptr);
+		vkCmdPushConstants(cmd, gAtrousPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+		vkCmdDispatch(cmd, (w + 7)/8, (h + 7)/8, 1);
+	}
 }
 
 }
