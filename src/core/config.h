@@ -292,6 +292,17 @@ enum Config {
 #undef SCREEN_DROPLETS		// we need the backbuffer for this effect
 #endif
 
+// RTGI is defined by the build system (premake --with-rtgi); ray traced global
+// illumination via a Vulkan side-car. Needs the librw gl3 backend on x64 Windows.
+#ifdef RTGI
+#if !defined(RW_GL3) || !defined(_WIN32)
+#error "RTGI requires the librw gl3 backend on Windows"
+#endif
+#if !defined(NEW_RENDERER) || !defined(EXTENDED_PIPELINES)
+#error "RTGI requires NEW_RENDERER and EXTENDED_PIPELINES"
+#endif
+#endif
+
 // Water & Particle
 // #define PC_WATER
 #define WATER_CHEATS

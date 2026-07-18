@@ -49,6 +49,9 @@ long _dwOperatingSystemVersion;
 #include "AnimViewer.h"
 #include "Font.h"
 #include "MemoryMgr.h"
+#ifdef RTGI
+#include "rtgi/rtgi.h"
+#endif
 
 // We found out that GLFW's keyboard input handling is still pretty delayed/not stable, so now we fetch input from X11 directly on Linux.
 #if !defined _WIN32 && !defined __APPLE__ && !defined __SWITCH__ // && !defined WAYLAND
@@ -1903,6 +1906,10 @@ main(int argc, char *argv[])
 
 	psPostRWinit();
 
+#ifdef RTGI
+	RayTracedGI::Initialise();
+#endif
+
 	ControlsManager.InitDefaultControlConfigMouse(MousePointerStateHelper.GetMouseSetUp());
 
 //	glfwSetWindowPos(PSGLOBAL(window), 0, 0);
@@ -2362,6 +2369,10 @@ main(int argc, char *argv[])
 	
 	_psFreeVideoModeList();
 
+
+#ifdef RTGI
+	RayTracedGI::Shutdown();
+#endif
 
 	/*
 	 * Tidy up the 3D (RenderWare) components of the application...

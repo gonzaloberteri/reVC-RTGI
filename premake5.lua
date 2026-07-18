@@ -23,6 +23,11 @@ newoption {
 }
 
 newoption {
+	trigger     = "with-rtgi",
+	description = "Build with ray traced global illumination (Vulkan side-car; win-amd64 gl3 only)"
+}
+
+newoption {
 	trigger     = "with-opus",
 	description = "Build with opus"
 }
@@ -254,6 +259,19 @@ project "reVC"
 	files { addSrcFiles("src/weapons") }
 	files { addSrcFiles("src/extras") }
 	files { "src/extras/GitSHA1.cpp" } -- this won't be in repo in first build
+
+	if(_OPTIONS["with-rtgi"]) then
+		files { addSrcFiles("src/extras/rtgi") }
+		files { "vendor/volk/volk.c" }
+		defines { "VK_USE_PLATFORM_WIN32_KHR" }	-- volk needs this for the win32 external handle entry points
+		includedirs { "vendor/Vulkan-Headers/include" }
+		includedirs { "vendor/volk" }
+		includedirs { "src/extras/rtgi" }
+		includedirs { path.join(Librw, "src/gl") }
+		filter "platforms:win-amd64-librw_gl3_glfw*"
+			defines { "RTGI" }
+		filter {}
+	end
 
 	includedirs { "src" }
 	includedirs { "src/animation" }

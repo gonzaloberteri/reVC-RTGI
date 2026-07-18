@@ -73,6 +73,9 @@
 #include "Ropes.h"
 #include "postfx.h"
 #include "custompipes.h"
+#ifdef RTGI
+#include "rtgi/rtgi.h"
+#endif
 #include "screendroplets.h"
 #include "VarConsole.h"
 #ifdef USE_OUR_VERSIONING
@@ -1610,6 +1613,10 @@ Idle(void *arg)
 		CustomPipes::EnvMapRender();
 #endif
 
+#ifdef RTGI
+		RayTracedGI::RenderFrame();
+#endif
+
 		RenderDebugShit();
 		RenderEffects();
 
@@ -1626,6 +1633,10 @@ Idle(void *arg)
 		tbStartTimer(0, "RenderMotionBlur");
 		TheCamera.RenderMotionBlur();
 		tbEndTimer("RenderMotionBlur");
+
+#ifdef RTGI
+		RayTracedGI::DebugRender();
+#endif
 
 		tbStartTimer(0, "Render2dStuff");
 		Render2dStuff();

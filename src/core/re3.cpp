@@ -32,6 +32,9 @@
 #include "PlayerPed.h"
 #include "Radar.h"
 #include "debugmenu.h"
+#ifdef RTGI
+#include "rtgi/rtgi.h"
+#endif
 #include "Frontend.h"
 #include "WaterLevel.h"
 #include "main.h"
@@ -995,6 +998,9 @@ DebugMenuPopulate(void)
 #endif
 #ifdef FIX_SPRITES
 		DebugMenuAddVarBool8("Render", "Fix Sprites", &CDraw::ms_bFixSprites, nil);
+#endif
+#ifdef RTGI
+		RayTracedGI::AddDebugMenuEntries();
 #endif
 		DebugMenuAddVarBool8("Render", "Backface Culling", &gBackfaceCulling, nil);
 		DebugMenuAddVarBool8("Render", "PS2 Alpha test Emu", &gPS2alphaTest, nil);
