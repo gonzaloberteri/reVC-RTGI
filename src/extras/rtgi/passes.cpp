@@ -15,6 +15,7 @@
 #include "main.h"
 
 #include "shaders/obj/primary_comp.inc"
+#include "shaders/obj/ao_comp.inc"
 
 namespace RayTracedGI {
 
@@ -29,12 +30,52 @@ struct PushConstants
 	uint32_t frame;
 };
 
+struct AoPushConstants
+{
+	float camPos[4];
+	float camRight[4];
+	float camUp[4];
+	float camFwd[4];
+	uint32_t size[2];
+	uint32_t frame;
+	uint32_t numRays;
+	float aoRadius;
+	float pad[3];
+};
+
 static VkDescriptorSetLayout gSetLayout;
 static VkPipelineLayout gPipeLayout;
 static VkPipeline gPipeline;
 static VkDescriptorPool gDescPool;
 static VkDescriptorSet gDescSet;
 static VkImageView gOutView;
+
+static VkDescriptorSetLayout gAoSetLayout;
+static VkPipelineLayout gAoPipeLayout;
+static VkPipeline gAoPipeline;
+static VkDescriptorSet gAoDescSet;
+
+static VkPipeline
+createComputePipeline(const uint32_t *code, size_t codeSize, VkPipelineLayout layout)
+{
+	VkShaderModuleCreateInfo smInfo = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+	smInfo.codeSize = codeSize;
+	smInfo.pCode = code;
+	VkShaderModule module;
+	if(vkCreateShaderModule(gVk.device, &smInfo, nullptr, &module) != VK_SUCCESS)
+		return VK_NULL_HANDLE;
+
+	VkComputePipelineCreateInfo cpInfo = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+	cpInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	cpInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+	cpInfo.stage.module = module;
+	cpInfo.stage.pName = "main";
+	cpInfo.layout = layout;
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	VkResult res = vkCreateComputePipelines(gVk.device, VK_NULL_HANDLE, 1, &cpInfo, nullptr, &pipeline);
+	vkDestroyShaderModule(gVk.device, module, nullptr);
+	return res == VK_SUCCESS ? pipeline : VK_NULL_HANDLE;
+}
 
 bool
 PassesInit(void)
@@ -91,14 +132,15 @@ PassesInit(void)
 		return false;
 	}
 
-	VkDescriptorPoolSize poolSizes[3] = {
-		{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1 },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 },
+	VkDescriptorPoolSize poolSizes[4] = {
+		{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 4 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 },
 	};
 	VkDescriptorPoolCreateInfo dpInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-	dpInfo.maxSets = 1;
-	dpInfo.poolSizeCount = 3;
+	dpInfo.maxSets = 4;
+	dpInfo.poolSizeCount = 4;
 	dpInfo.pPoolSizes = poolSizes;
 	if(vkCreateDescriptorPool(gVk.device, &dpInfo, nullptr, &gDescPool) != VK_SUCCESS)
 		return false;
@@ -118,17 +160,73 @@ PassesInit(void)
 	if(vkCreateImageView(gVk.device, &viewInfo, nullptr, &gOutView) != VK_SUCCESS)
 		return false;
 
+	// --- AO pass ---------------------------------------------------------
+
+	VkDescriptorSetLayoutBinding aoBindings[4] = {};
+	aoBindings[0].binding = 0;
+	aoBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+	aoBindings[0].descriptorCount = 1;
+	aoBindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	aoBindings[1].binding = 1;
+	aoBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	aoBindings[1].descriptorCount = 1;
+	aoBindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	aoBindings[2].binding = 2;
+	aoBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	aoBindings[2].descriptorCount = 1;
+	aoBindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	aoBindings[3].binding = 3;
+	aoBindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	aoBindings[3].descriptorCount = 1;
+	aoBindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	VkDescriptorSetLayoutCreateInfo aoLayoutInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+	aoLayoutInfo.bindingCount = 4;
+	aoLayoutInfo.pBindings = aoBindings;
+	if(vkCreateDescriptorSetLayout(gVk.device, &aoLayoutInfo, nullptr, &gAoSetLayout) != VK_SUCCESS)
+		return false;
+
+	VkPushConstantRange aoPcRange = {};
+	aoPcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	aoPcRange.size = sizeof(AoPushConstants);
+	VkPipelineLayoutCreateInfo aoPlInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+	aoPlInfo.setLayoutCount = 1;
+	aoPlInfo.pSetLayouts = &gAoSetLayout;
+	aoPlInfo.pushConstantRangeCount = 1;
+	aoPlInfo.pPushConstantRanges = &aoPcRange;
+	if(vkCreatePipelineLayout(gVk.device, &aoPlInfo, nullptr, &gAoPipeLayout) != VK_SUCCESS)
+		return false;
+
+	gAoPipeline = createComputePipeline(ao_comp_spv, sizeof(ao_comp_spv), gAoPipeLayout);
+	if(gAoPipeline == VK_NULL_HANDLE){
+		RtgiLog("RTGI: AO pipeline creation failed\n");
+		return false;
+	}
+
+	VkDescriptorSetAllocateInfo aoDsInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+	aoDsInfo.descriptorPool = gDescPool;
+	aoDsInfo.descriptorSetCount = 1;
+	aoDsInfo.pSetLayouts = &gAoSetLayout;
+	if(vkAllocateDescriptorSets(gVk.device, &aoDsInfo, &gAoDescSet) != VK_SUCCESS)
+		return false;
+
 	return true;
 }
 
 void
 PassesShutdown(void)
 {
+	if(gAoPipeline) vkDestroyPipeline(gVk.device, gAoPipeline, nullptr);
+	if(gAoPipeLayout) vkDestroyPipelineLayout(gVk.device, gAoPipeLayout, nullptr);
+	if(gAoSetLayout) vkDestroyDescriptorSetLayout(gVk.device, gAoSetLayout, nullptr);
 	if(gOutView) vkDestroyImageView(gVk.device, gOutView, nullptr);
 	if(gDescPool) vkDestroyDescriptorPool(gVk.device, gDescPool, nullptr);
 	if(gPipeline) vkDestroyPipeline(gVk.device, gPipeline, nullptr);
 	if(gPipeLayout) vkDestroyPipelineLayout(gVk.device, gPipeLayout, nullptr);
 	if(gSetLayout) vkDestroyDescriptorSetLayout(gVk.device, gSetLayout, nullptr);
+	gAoPipeline = VK_NULL_HANDLE;
+	gAoPipeLayout = VK_NULL_HANDLE;
+	gAoSetLayout = VK_NULL_HANDLE;
 	gOutView = VK_NULL_HANDLE;
 	gDescPool = VK_NULL_HANDLE;
 	gPipeline = VK_NULL_HANDLE;
@@ -193,6 +291,72 @@ PassesTracePrimary(VkCommandBuffer cmd, uint32_t mode, uint32_t frame)
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gPipeLayout, 0, 1, &gDescSet, 0, nullptr);
 	vkCmdPushConstants(cmd, gPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
 	vkCmdDispatch(cmd, (gInterop.rtOutput.width + 7)/8, (gInterop.rtOutput.height + 7)/8, 1);
+}
+
+void
+PassesTraceAO(VkCommandBuffer cmd, uint32_t frame, uint32_t numRays, float radius)
+{
+	VkAccelerationStructureKHR tlas = TlasHandle();
+	VkWriteDescriptorSetAccelerationStructureKHR asWrite = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
+	asWrite.accelerationStructureCount = 1;
+	asWrite.pAccelerationStructures = &tlas;
+	VkDescriptorImageInfo aoImgInfo = {};
+	aoImgInfo.imageView = gInterop.aoOutput.view;
+	aoImgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+	VkDescriptorImageInfo normalInfo = {};
+	normalInfo.sampler = gInterop.sampler;
+	normalInfo.imageView = gInterop.gbNormal.view;
+	normalInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+	VkDescriptorImageInfo depthInfo = normalInfo;
+	depthInfo.imageView = gInterop.gbDepth.view;
+
+	VkWriteDescriptorSet writes[4] = {};
+	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[0].pNext = &asWrite;
+	writes[0].dstSet = gAoDescSet;
+	writes[0].dstBinding = 0;
+	writes[0].descriptorCount = 1;
+	writes[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+	writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[1].dstSet = gAoDescSet;
+	writes[1].dstBinding = 1;
+	writes[1].descriptorCount = 1;
+	writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	writes[1].pImageInfo = &aoImgInfo;
+	writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[2].dstSet = gAoDescSet;
+	writes[2].dstBinding = 2;
+	writes[2].descriptorCount = 1;
+	writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	writes[2].pImageInfo = &normalInfo;
+	writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[3].dstSet = gAoDescSet;
+	writes[3].dstBinding = 3;
+	writes[3].descriptorCount = 1;
+	writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	writes[3].pImageInfo = &depthInfo;
+	vkUpdateDescriptorSets(gVk.device, 4, writes, 0, nullptr);
+
+	rw::Camera *cam = (rw::Camera*)Scene.camera;
+	rw::Matrix *ltm = cam->getFrame()->getLTM();
+
+	AoPushConstants pc = {};
+	pc.camPos[0] = ltm->pos.x; pc.camPos[1] = ltm->pos.y; pc.camPos[2] = ltm->pos.z;
+	pc.camRight[0] = ltm->right.x; pc.camRight[1] = ltm->right.y; pc.camRight[2] = ltm->right.z;
+	pc.camRight[3] = cam->viewWindow.x;
+	pc.camUp[0] = ltm->up.x; pc.camUp[1] = ltm->up.y; pc.camUp[2] = ltm->up.z;
+	pc.camUp[3] = cam->viewWindow.y;
+	pc.camFwd[0] = ltm->at.x; pc.camFwd[1] = ltm->at.y; pc.camFwd[2] = ltm->at.z;
+	pc.size[0] = gInterop.aoOutput.width;
+	pc.size[1] = gInterop.aoOutput.height;
+	pc.frame = frame;
+	pc.numRays = numRays;
+	pc.aoRadius = radius;
+
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gAoPipeline);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gAoPipeLayout, 0, 1, &gAoDescSet, 0, nullptr);
+	vkCmdPushConstants(cmd, gAoPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+	vkCmdDispatch(cmd, (gInterop.aoOutput.width + 7)/8, (gInterop.aoOutput.height + 7)/8, 1);
 }
 
 }

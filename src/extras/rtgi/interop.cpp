@@ -93,11 +93,14 @@ InteropLoadGL(void)
 }
 
 bool
-SharedImageCreate(SharedImage *img, int width, int height)
+SharedImageCreate(SharedImage *img, int width, int height,
+	VkFormat vkFormat, uint32_t glInternalFormat, bool vkStorage)
 {
 	memset(img, 0, sizeof(*img));
 	img->width = width;
 	img->height = height;
+	img->format = vkFormat;
+	img->glInternalFormat = glInternalFormat;
 
 	VkExternalMemoryImageCreateInfo extImg = { VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO };
 	extImg.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
@@ -105,13 +108,15 @@ SharedImageCreate(SharedImage *img, int width, int height)
 	VkImageCreateInfo imgInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 	imgInfo.pNext = &extImg;
 	imgInfo.imageType = VK_IMAGE_TYPE_2D;
-	imgInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+	imgInfo.format = vkFormat;
 	imgInfo.extent = { (uint32_t)width, (uint32_t)height, 1 };
 	imgInfo.mipLevels = 1;
 	imgInfo.arrayLayers = 1;
 	imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 	imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-	imgInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+	imgInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+	if(vkStorage)
+		imgInfo.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
 	imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 	if(vkCreateImage(gVk.device, &imgInfo, nullptr, &img->image) != VK_SUCCESS)
@@ -153,7 +158,7 @@ SharedImageCreate(SharedImage *img, int width, int height)
 
 	glGenTextures(1, &img->glTexture);
 	glBindTexture(GL_TEXTURE_2D, img->glTexture);
-	glTexStorageMem2DEXT_(GL_TEXTURE_2D, 1, GL_RGBA16F, width, height, img->glMemoryObject, 0);
+	glTexStorageMem2DEXT_(GL_TEXTURE_2D, 1, glInternalFormat, width, height, img->glMemoryObject, 0);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -164,6 +169,14 @@ SharedImageCreate(SharedImage *img, int width, int height)
 		RtgiLog("RTGI: GL error importing shared image\n");
 		return false;
 	}
+
+	VkImageViewCreateInfo viewInfo = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+	viewInfo.image = img->image;
+	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	viewInfo.format = vkFormat;
+	viewInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+	if(vkCreateImageView(gVk.device, &viewInfo, nullptr, &img->view) != VK_SUCCESS)
+		return false;
 	return true;
 }
 
@@ -172,6 +185,7 @@ SharedImageDestroy(SharedImage *img)
 {
 	if(img->glTexture) glDeleteTextures(1, &img->glTexture);
 	if(img->glMemoryObject) glDeleteMemoryObjectsEXT_(1, &img->glMemoryObject);
+	if(img->view) vkDestroyImageView(gVk.device, img->view, nullptr);
 	if(img->image) vkDestroyImage(gVk.device, img->image, nullptr);
 	if(img->memory) vkFreeMemory(gVk.device, img->memory, nullptr);
 	memset(img, 0, sizeof(*img));
@@ -205,11 +219,28 @@ InteropCreate(int width, int height)
 	if(!gInterop.glExtensionsPresent || !gVk.valid)
 		return false;
 
-	if(!SharedImageCreate(&gInterop.rtOutput, width, height))
+	if(!SharedImageCreate(&gInterop.rtOutput, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, GL_RGBA16F, true))
+		return false;
+	if(!SharedImageCreate(&gInterop.aoOutput, width, height, VK_FORMAT_R8G8_UNORM, GL_RG8, true))
+		return false;
+	if(!SharedImageCreate(&gInterop.gbNormal, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, GL_RGBA16F, false))
+		return false;
+	if(!SharedImageCreate(&gInterop.gbDepth, width, height, VK_FORMAT_R32_SFLOAT, GL_R32F, false))
+		return false;
+	if(!sharedSemaphoreCreate(&gInterop.semGbufDone, &gInterop.glSemGbufDone))
 		return false;
 	if(!sharedSemaphoreCreate(&gInterop.semRtDone, &gInterop.glSemRtDone))
 		return false;
 	if(!sharedSemaphoreCreate(&gInterop.semGlDone, &gInterop.glSemGlDone))
+		return false;
+
+	VkSamplerCreateInfo sampInfo = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+	sampInfo.magFilter = VK_FILTER_NEAREST;
+	sampInfo.minFilter = VK_FILTER_NEAREST;
+	sampInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	sampInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	sampInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	if(vkCreateSampler(gVk.device, &sampInfo, nullptr, &gInterop.sampler) != VK_SUCCESS)
 		return false;
 
 	gInterop.firstFrame = true;
@@ -223,26 +254,44 @@ InteropDestroy(void)
 {
 	if(gVk.device)
 		vkDeviceWaitIdle(gVk.device);
+	if(gInterop.sampler) vkDestroySampler(gVk.device, gInterop.sampler, nullptr);
+	if(gInterop.glSemGbufDone) glDeleteSemaphoresEXT_(1, &gInterop.glSemGbufDone);
 	if(gInterop.glSemRtDone) glDeleteSemaphoresEXT_(1, &gInterop.glSemRtDone);
 	if(gInterop.glSemGlDone) glDeleteSemaphoresEXT_(1, &gInterop.glSemGlDone);
+	if(gInterop.semGbufDone) vkDestroySemaphore(gVk.device, gInterop.semGbufDone, nullptr);
 	if(gInterop.semRtDone) vkDestroySemaphore(gVk.device, gInterop.semRtDone, nullptr);
 	if(gInterop.semGlDone) vkDestroySemaphore(gVk.device, gInterop.semGlDone, nullptr);
 	SharedImageDestroy(&gInterop.rtOutput);
+	SharedImageDestroy(&gInterop.aoOutput);
+	SharedImageDestroy(&gInterop.gbNormal);
+	SharedImageDestroy(&gInterop.gbDepth);
 	memset(&gInterop, 0, sizeof(gInterop));
+}
+
+void
+InteropSignalGbufDone(void)
+{
+	GLenum layouts[2] = { GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT };
+	GLuint textures[2] = { gInterop.gbNormal.glTexture, gInterop.gbDepth.glTexture };
+	glSignalSemaphoreEXT_(gInterop.glSemGbufDone, 0, nullptr, 2, textures, layouts);
+	glFlush();
 }
 
 void
 InteropWaitRtDone(void)
 {
-	GLenum layout = GL_LAYOUT_GENERAL_EXT;
-	glWaitSemaphoreEXT_(gInterop.glSemRtDone, 0, nullptr, 1, &gInterop.rtOutput.glTexture, &layout);
+	GLenum layouts[2] = { GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT };
+	GLuint textures[2] = { gInterop.rtOutput.glTexture, gInterop.aoOutput.glTexture };
+	glWaitSemaphoreEXT_(gInterop.glSemRtDone, 0, nullptr, 2, textures, layouts);
 }
 
 void
 InteropSignalGlDone(void)
 {
-	GLenum layout = GL_LAYOUT_GENERAL_EXT;
-	glSignalSemaphoreEXT_(gInterop.glSemGlDone, 0, nullptr, 1, &gInterop.rtOutput.glTexture, &layout);
+	GLenum layouts[4] = { GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT };
+	GLuint textures[4] = { gInterop.rtOutput.glTexture, gInterop.aoOutput.glTexture,
+		gInterop.gbNormal.glTexture, gInterop.gbDepth.glTexture };
+	glSignalSemaphoreEXT_(gInterop.glSemGlDone, 0, nullptr, 4, textures, layouts);
 	// make sure the signal reaches the driver promptly
 	glFlush();
 }

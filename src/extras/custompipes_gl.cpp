@@ -12,6 +12,9 @@
 #include "Renderer.h"
 #include "World.h"
 #include "custompipes.h"
+#ifdef RTGI
+#include "rtgi/gbuffer.h"
+#endif
 
 #ifdef EXTENDED_PIPELINES
 
@@ -192,6 +195,12 @@ worldRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 {
 	using namespace rw;
 	using namespace rw::gl3;
+
+#ifdef RTGI
+	// ray traced GI path replaces the ambient term per-pixel
+	if(RayTracedGI::WorldRenderCB(atomic, header))
+		return;
+#endif
 
 	if(!LightmapEnable){
 		gl3::defaultRenderCB(atomic, header);

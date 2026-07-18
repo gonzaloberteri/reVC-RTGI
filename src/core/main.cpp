@@ -1605,6 +1605,12 @@ Idle(void *arg)
 		RwCameraSetFogDistance(Scene.camera, CTimeCycle::GetFogStart());
 #endif
 
+#ifdef RTGI
+		// G-buffer prepass + VK RT passes; must finish before RenderScene
+		// so the forward shaders can sample the results
+		RayTracedGI::RenderFrame();
+#endif
+
 		tbStartTimer(0, "RenderScene");
 		RenderScene();
 		tbEndTimer("RenderScene");
@@ -1613,9 +1619,6 @@ Idle(void *arg)
 		CustomPipes::EnvMapRender();
 #endif
 
-#ifdef RTGI
-		RayTracedGI::RenderFrame();
-#endif
 
 		RenderDebugShit();
 		RenderEffects();

@@ -13,12 +13,18 @@ enum eDebugView {
 	DEBUGVIEW_RT_NORMALS,	// primary rays: geometric normals
 	DEBUGVIEW_RT_DEPTH,	// primary rays: depth
 	DEBUGVIEW_RT_INSTANCES,	// primary rays: instance id colors
+	DEBUGVIEW_AO,		// ray traced ambient occlusion
 	DEBUGVIEW_MAX
 };
 
 // runtime master switch; forced false forever if init fails
 extern bool gbRayTracedGI;
 extern int32 gnDebugView;
+// AO controls
+extern bool gbAOEnable;
+extern float gfAOStrength;	// 0 = off, 1 = full ambient modulation
+extern float gfAORadius;
+extern int32 gnAORays;
 
 // call once the GL context exists (after RW init); safe to call when unsupported
 void Initialise(void);

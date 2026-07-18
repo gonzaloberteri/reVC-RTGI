@@ -1,0 +1,96 @@
+#version 460
+#extension GL_EXT_ray_query : require
+
+// Ray traced ambient occlusion from the raster G-buffer.
+// r = AO visibility; g reserved for sun visibility (M4).
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform accelerationStructureEXT tlas;
+layout(binding = 1, rg8) uniform image2D aoImage;
+layout(binding = 2) uniform sampler2D gbNormal;
+layout(binding = 3) uniform sampler2D gbDepth;
+
+layout(push_constant) uniform PC {
+	vec4 camPos;
+	vec4 camRight;	// w = viewWindow.x
+	vec4 camUp;	// w = viewWindow.y
+	vec4 camFwd;
+	uvec2 size;
+	uint frame;
+	uint numRays;
+	float aoRadius;
+	float pad0, pad1, pad2;
+} pc;
+
+// PCG hash based random
+uint pcg(inout uint state)
+{
+	state = state*747796405u + 2891336453u;
+	uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+	return (word >> 22u) ^ word;
+}
+
+float rnd(inout uint state)
+{
+	return float(pcg(state)) / 4294967296.0;
+}
+
+vec3 cosineHemisphere(vec3 n, inout uint state)
+{
+	float r1 = rnd(state);
+	float r2 = rnd(state);
+	float phi = 6.2831853 * r1;
+	float sr = sqrt(r2);
+	// build tangent frame
+	vec3 t = normalize(abs(n.z) < 0.99 ? cross(n, vec3(0,0,1)) : cross(n, vec3(1,0,0)));
+	vec3 b = cross(n, t);
+	return normalize(t*(cos(phi)*sr) + b*(sin(phi)*sr) + n*sqrt(1.0 - r2));
+}
+
+void main()
+{
+	uvec2 px = gl_GlobalInvocationID.xy;
+	if(px.x >= pc.size.x || px.y >= pc.size.y)
+		return;
+
+	vec2 uv = (vec2(px) + 0.5) / vec2(pc.size);
+	float depth = texelFetch(gbDepth, ivec2(px), 0).r;
+	vec3 normal = texelFetch(gbNormal, ivec2(px), 0).xyz;
+
+	if(depth <= 0.0 || dot(normal, normal) < 0.5){
+		// sky or no G-buffer coverage
+		imageStore(aoImage, ivec2(px), vec4(1.0, 1.0, 0.0, 1.0));
+		return;
+	}
+	normal = normalize(normal);
+
+	// reconstruct world position: depth is distance along camera forward
+	float u = uv.x*2.0 - 1.0;
+	float v = 1.0 - uv.y*2.0;
+	vec3 viewRay = pc.camFwd.xyz - pc.camRight.xyz*(u*pc.camRight.w) + pc.camUp.xyz*(v*pc.camUp.w);
+	vec3 worldPos = pc.camPos.xyz + viewRay*depth;
+	vec3 origin = worldPos + normal*0.05;
+
+	uint state = px.x*7919u + px.y*104729u + pc.frame*15485863u;
+
+	float vis = 0.0;
+	for(uint i = 0u; i < pc.numRays; i++){
+		vec3 dir = cosineHemisphere(normal, state);
+		rayQueryEXT rq;
+		rayQueryInitializeEXT(rq, tlas,
+			gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+			0xFF, origin, 0.02, dir, pc.aoRadius);
+		while(rayQueryProceedEXT(rq)) { }
+		if(rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT)
+			vis += 1.0;
+		else{
+			// distance falloff: nearby hits occlude more
+			float t = rayQueryGetIntersectionTEXT(rq, true);
+			vis += clamp(t / pc.aoRadius, 0.0, 1.0) * 0.5;
+		}
+	}
+	vis /= float(pc.numRays);
+
+	imageStore(aoImage, ivec2(px), vec4(vis, 1.0, 0.0, 1.0));
+}

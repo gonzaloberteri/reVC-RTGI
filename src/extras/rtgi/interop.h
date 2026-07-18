@@ -6,18 +6,21 @@
 
 namespace RayTracedGI {
 
-// One VK-allocated, GL-imported shared image plus the semaphore pair used to
-// hand it back and forth each frame. All images the side-car produces use this
-// mechanism; M1 has a single proof-of-concept image.
+// One VK-allocated, GL-imported shared image. GL writes the G-buffer ones as
+// FBO attachments; VK writes the output ones from compute; both sides use
+// GENERAL layout throughout to keep cross-API layout state trivial.
 struct SharedImage
 {
 	// VK side
 	VkImage image;
+	VkImageView view;
 	VkDeviceMemory memory;
 	VkDeviceSize size;
+	VkFormat format;
 	// GL side
 	uint32_t glMemoryObject;
 	uint32_t glTexture;
+	uint32_t glInternalFormat;
 
 	int width, height;
 };
@@ -27,11 +30,21 @@ struct InteropState
 	bool glExtensionsPresent;
 	uint8_t glDeviceLUID[8];
 
-	SharedImage rtOutput;	// M1: VK clears this, GL displays it
+	// GL writes, VK reads
+	SharedImage gbNormal;	// RGBA16F world normal
+	SharedImage gbDepth;	// R32F linear view depth
+	// VK writes, GL reads
+	SharedImage rtOutput;	// RGBA16F debug/trace output
+	SharedImage aoOutput;	// RG8: r = AO visibility, g = sun visibility (M4)
 
-	// VK->GL: RT results ready; GL->VK: GL done reading previous frame
+	VkSampler sampler;	// nearest, for sampling the G-buffer in compute
+
+	// GL gbuffer done -> VK may trace; VK->GL: results ready;
+	// GL->VK: GL done reading previous frame
+	VkSemaphore semGbufDone;
 	VkSemaphore semRtDone;
 	VkSemaphore semGlDone;
+	uint32_t glSemGbufDone;
 	uint32_t glSemRtDone;
 	uint32_t glSemGlDone;
 
@@ -44,14 +57,16 @@ extern InteropState gInterop;
 // load GL entry points + query LUID; needs a current GL context. false if the
 // required GL extensions are missing.
 bool InteropLoadGL(void);
-// create shared image + semaphores; needs a valid VkContext
+// create shared images + semaphores; needs a valid VkContext
 bool InteropCreate(int width, int height);
 void InteropDestroy(void);
 
-bool SharedImageCreate(SharedImage *img, int width, int height);
+bool SharedImageCreate(SharedImage *img, int width, int height,
+	VkFormat vkFormat, uint32_t glInternalFormat, bool vkStorage);
 void SharedImageDestroy(SharedImage *img);
 
 // GL-side sync helpers
+void InteropSignalGbufDone(void);	// after the G-buffer prepass
 void InteropWaitRtDone(void);	// server-side wait until VK signalled results
 void InteropSignalGlDone(void);	// tell VK that GL consumed them
 

@@ -13,6 +13,7 @@
 #include "blas.h"
 #include "tlas.h"
 #include "passes.h"
+#include "gbuffer.h"
 
 #include "common.h"
 #include "rtgi.h"
@@ -41,7 +42,11 @@ RtgiLog(const char *fmt, ...)
 }
 
 bool gbRayTracedGI = true;
-int32 gnDebugView = DEBUGVIEW_RT_NORMALS;	// M2 default: show the RT scene
+int32 gnDebugView = DEBUGVIEW_OFF;	// M3: AO shows in the scene itself
+bool gbAOEnable = true;
+float gfAOStrength = 0.85f;
+float gfAORadius = 2.5f;
+int32 gnAORays = 2;
 
 static bool initialised;
 static uint32 frameCounter;
@@ -69,7 +74,11 @@ static const char *blitFragSrc =
 "in vec2 v_uv;\n"
 "out vec4 color;\n"
 "uniform sampler2D tex;\n"
-"void main() { color = vec4(texture(tex, v_uv).rgb, 1.0); }\n";
+"uniform int u_mode;\n"	// 0 = rgb, 1 = replicate red (AO)
+"void main() {\n"
+"	vec4 t = texture(tex, v_uv);\n"
+"	color = vec4(u_mode == 1 ? vec3(t.r) : t.rgb, 1.0);\n"
+"}\n";
 
 static GLuint
 compileShader(GLenum type, const char *src)
@@ -141,6 +150,8 @@ Initialise(void)
 		BlasRegisterPlugin();
 		if(!BlasInit() || !TlasInit() || !PassesInit())
 			goto fail;
+		if(!GbufferInit(RsGlobal.maximumWidth, RsGlobal.maximumHeight))
+			goto fail;
 	}
 
 	initialised = true;
@@ -159,6 +170,7 @@ Shutdown(void)
 	if(!initialised)
 		return;
 	if(gVk.hasRayTracing){
+		GbufferShutdown();
 		PassesShutdown();
 		TlasShutdown();
 		BlasShutdown();
@@ -180,6 +192,14 @@ RenderFrame(void)
 	// don't re-record while the previous frame's VK work is in flight
 	vkWaitForFences(gVk.device, 1, &gVk.frameFence, VK_TRUE, UINT64_MAX);
 	vkResetFences(gVk.device, 1, &gVk.frameFence);
+
+	// GL: G-buffer prepass for this camera, handed to VK via semaphore
+	bool gbufDone = false;
+	if(gVk.hasRayTracing && gbAOEnable){
+		GbufferRender();
+		InteropSignalGbufDone();
+		gbufDone = true;
+	}
 
 	VkCommandBufferBeginInfo begin = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
 	begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -209,10 +229,23 @@ RenderFrame(void)
 		vkCmdPipelineBarrier(gVk.cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 			0, 0, nullptr, 0, nullptr, 1, &toGeneral);
 
-		uint32_t mode = 1;
-		if(gnDebugView == DEBUGVIEW_RT_DEPTH) mode = 2;
-		else if(gnDebugView == DEBUGVIEW_RT_INSTANCES) mode = 3;
-		PassesTracePrimary(gVk.cmdBuf, mode, frameCounter);
+		// primary debug view only when someone is looking at it
+		if(gnDebugView >= DEBUGVIEW_RT_NORMALS && gnDebugView <= DEBUGVIEW_RT_INSTANCES){
+			uint32_t mode = 1;
+			if(gnDebugView == DEBUGVIEW_RT_DEPTH) mode = 2;
+			else if(gnDebugView == DEBUGVIEW_RT_INSTANCES) mode = 3;
+			PassesTracePrimary(gVk.cmdBuf, mode, frameCounter);
+		}
+
+		// AO pass, consuming the G-buffer
+		if(gbufDone){
+			VkImageMemoryBarrier aoToGeneral = toGeneral;
+			aoToGeneral.image = gInterop.aoOutput.image;
+			vkCmdPipelineBarrier(gVk.cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				0, 0, nullptr, 0, nullptr, 1, &aoToGeneral);
+			// gbuffer images were left in GENERAL by the semaphore import
+			PassesTraceAO(gVk.cmdBuf, frameCounter, (uint32_t)gnAORays, gfAORadius);
+		}
 
 		VkImageMemoryBarrier afterTrace = toGeneral;
 		afterTrace.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -257,18 +290,30 @@ RenderFrame(void)
 	if(traced && (frameCounter % 300) == 0)
 		RtgiLog("RTGI: %u TLAS instances, %d BLASes\n", TlasInstanceCount(), BlasCount());
 
-	VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+	VkSemaphore waitSems[2];
+	VkPipelineStageFlags waitStages[2];
+	uint32_t numWaits = 0;
+	// wait until GL is done reading the previous frame's output
+	if(!gInterop.firstFrame){
+		waitSems[numWaits] = gInterop.semGlDone;
+		waitStages[numWaits] = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+		numWaits++;
+	}
+	// wait until GL finished the G-buffer prepass
+	if(gbufDone){
+		waitSems[numWaits] = gInterop.semGbufDone;
+		waitStages[numWaits] = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+		numWaits++;
+	}
+
 	VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
 	submit.commandBufferCount = 1;
 	submit.pCommandBuffers = &gVk.cmdBuf;
 	submit.signalSemaphoreCount = 1;
 	submit.pSignalSemaphores = &gInterop.semRtDone;
-	// wait until GL is done reading the previous frame's output
-	if(!gInterop.firstFrame){
-		submit.waitSemaphoreCount = 1;
-		submit.pWaitSemaphores = &gInterop.semGlDone;
-		submit.pWaitDstStageMask = &waitStage;
-	}
+	submit.waitSemaphoreCount = numWaits;
+	submit.pWaitSemaphores = waitSems;
+	submit.pWaitDstStageMask = waitStages;
 	gInterop.firstFrame = false;
 
 	vkQueueSubmit(gVk.queue, 1, &submit, gVk.frameFence);
@@ -306,8 +351,10 @@ DebugRender(void)
 		glViewport(prevViewport[0] + prevViewport[2]/2, prevViewport[1], prevViewport[2]/2, prevViewport[3]/2);
 		glUseProgram(blitProgram);
 		glBindVertexArray(blitVAO);
-		glBindTexture(GL_TEXTURE_2D, gInterop.rtOutput.glTexture);
+		glBindTexture(GL_TEXTURE_2D, gnDebugView == DEBUGVIEW_AO ?
+			gInterop.aoOutput.glTexture : gInterop.rtOutput.glTexture);
 		glUniform1i(glGetUniformLocation(blitProgram, "tex"), 0);
+		glUniform1i(glGetUniformLocation(blitProgram, "u_mode"), gnDebugView == DEBUGVIEW_AO ? 1 : 0);
 		glDrawArrays(GL_TRIANGLES, 0, 3);
 
 		glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
@@ -327,9 +374,13 @@ DebugRender(void)
 void
 AddDebugMenuEntries(void)
 {
-	static const char *debugViews[] = { "Off", "Interop", "RT Normals", "RT Depth", "RT Instances" };
+	static const char *debugViews[] = { "Off", "Interop", "RT Normals", "RT Depth", "RT Instances", "AO" };
 	DebugMenuAddVarBool8("RTGI", "Ray traced GI", (int8_t*)&gbRayTracedGI, nil);
 	DebugMenuAddVar("RTGI", "Debug view", &gnDebugView, nil, 1, 0, DEBUGVIEW_MAX-1, debugViews);
+	DebugMenuAddVarBool8("RTGI", "RT ambient occlusion", (int8_t*)&gbAOEnable, nil);
+	DebugMenuAddVar("RTGI", "AO strength", &gfAOStrength, nil, 0.05f, 0.0f, 1.0f);
+	DebugMenuAddVar("RTGI", "AO radius", &gfAORadius, nil, 0.5f, 0.5f, 10.0f);
+	DebugMenuAddVar("RTGI", "AO rays", &gnAORays, nil, 1, 1, 8, nil);
 }
 
 }

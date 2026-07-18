@@ -56,6 +56,10 @@ class CRenderer
 public:
 	static float ms_lodDistScale;
 	static bool m_loadingPriority;
+#ifdef RTGI
+	static int32 GetNoOfVisibleEntities(void) { return ms_nNoOfVisibleEntities; }
+	static CEntity *GetVisibleEntity(int32 i) { return ms_aVisibleEntityPtrs[i]; }
+#endif
 
 	static void Init(void);
 	static void Shutdown(void);
