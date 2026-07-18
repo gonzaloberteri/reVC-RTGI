@@ -15,11 +15,9 @@
 #include "Renderer.h"
 #include "Entity.h"
 #include "World.h"
+#include "Timecycle.h"
 
 namespace RayTracedGI {
-
-extern bool gbAOEnable;
-extern float gfAOStrength;
 
 static GLuint gFbo;
 static GLuint gDepthRbo;
@@ -184,7 +182,8 @@ WorldRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 	glBindTexture(GL_TEXTURE_2D, gInterop.aoOutput.glTexture);
 	glActiveTexture(GL_TEXTURE0);
 	glUniform1i(U(u_aoTex), 3);
-	float params[4] = { gfAOStrength, 1.0f/gWidth, 1.0f/gHeight, 0.0f };
+	float shadowStrength = gbSunShadows ? (CTimeCycle::GetShadowStrength()/255.0f)*0.55f : 0.0f;
+	float params[4] = { gfAOStrength, 1.0f/gWidth, 1.0f/gHeight, shadowStrength };
 	glUniform4fv(U(u_rtgiParams), 1, params);
 
 	InstanceData *inst = header->inst;

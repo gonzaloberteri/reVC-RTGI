@@ -1,6 +1,9 @@
 #include "common.h"
 
 #include "main.h"
+#ifdef RTGI
+#include "rtgi/rtgi.h"
+#endif
 #include "TxdStore.h"
 #include "Timer.h"
 #include "Camera.h"
@@ -489,6 +492,12 @@ void
 CShadows::StoreShadowForVehicle(CVehicle *pCar, VEH_SHD_TYPE type)
 {
 	ASSERT(pCar != nil);
+
+#ifdef RTGI
+	// ray traced shadows replace the vehicle blobs
+	if ( RayTracedGI::ReplacingVehicleShadows() )
+		return;
+#endif
 
 	if ( CTimeCycle::GetShadowStrength() != 0 )
 	{

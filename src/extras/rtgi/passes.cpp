@@ -13,6 +13,7 @@
 #include "common.h"
 #include <rwcore.h>
 #include "main.h"
+#include "Timecycle.h"
 
 #include "shaders/obj/primary_comp.inc"
 #include "shaders/obj/ao_comp.inc"
@@ -36,6 +37,7 @@ struct AoPushConstants
 	float camRight[4];
 	float camUp[4];
 	float camFwd[4];
+	float sunDir[4];	// w > 0 = sun up
 	uint32_t size[2];
 	uint32_t frame;
 	uint32_t numRays;
@@ -347,6 +349,9 @@ PassesTraceAO(VkCommandBuffer cmd, uint32_t frame, uint32_t numRays, float radiu
 	pc.camUp[0] = ltm->up.x; pc.camUp[1] = ltm->up.y; pc.camUp[2] = ltm->up.z;
 	pc.camUp[3] = cam->viewWindow.y;
 	pc.camFwd[0] = ltm->at.x; pc.camFwd[1] = ltm->at.y; pc.camFwd[2] = ltm->at.z;
+	CVector sunDir = CTimeCycle::GetSunDirection();
+	pc.sunDir[0] = sunDir.x; pc.sunDir[1] = sunDir.y; pc.sunDir[2] = sunDir.z;
+	pc.sunDir[3] = (sunDir.z > 0.0f && CTimeCycle::GetShadowStrength() > 0) ? 1.0f : 0.0f;
 	pc.size[0] = gInterop.aoOutput.width;
 	pc.size[1] = gInterop.aoOutput.height;
 	pc.frame = frame;

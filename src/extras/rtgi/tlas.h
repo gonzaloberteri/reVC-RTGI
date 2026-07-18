@@ -6,6 +6,13 @@
 
 namespace RayTracedGI {
 
+// TLAS instance visibility masks
+enum {
+	MASK_STATIC = 0x01,	// world, objects
+	MASK_VEHICLES = 0x02,
+	MASK_ALL = 0xFF,
+};
+
 bool TlasInit(void);
 void TlasShutdown(void);
 

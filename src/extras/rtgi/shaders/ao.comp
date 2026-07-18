@@ -16,12 +16,17 @@ layout(push_constant) uniform PC {
 	vec4 camRight;	// w = viewWindow.x
 	vec4 camUp;	// w = viewWindow.y
 	vec4 camFwd;
+	vec4 sunDir;	// xyz = to sun; w > 0 when the sun is up
 	uvec2 size;
 	uint frame;
 	uint numRays;
 	float aoRadius;
 	float pad0, pad1, pad2;
 } pc;
+
+// only vehicles cast RT sun shadows for now (blob shadow replacement);
+// the world's sun light is baked into prelight
+const uint SUN_SHADOW_MASK = 0x02u;
 
 // PCG hash based random
 uint pcg(inout uint state)
@@ -96,5 +101,25 @@ void main()
 	}
 	vis /= float(pc.numRays);
 
-	imageStore(aoImage, ivec2(px), vec4(vis, 1.0, 0.0, 1.0));
+	// sun shadow: one cone-jittered ray toward the sun
+	float sunVis = 1.0;
+	if(pc.sunDir.w > 0.0){
+		vec3 sd = normalize(pc.sunDir.xyz);
+		// jitter within ~1.5 degree cone for soft edges
+		vec3 t = normalize(abs(sd.z) < 0.99 ? cross(sd, vec3(0,0,1)) : cross(sd, vec3(1,0,0)));
+		vec3 b = cross(sd, t);
+		float a1 = rnd(state)*6.2831853;
+		float a2 = rnd(state)*0.026;
+		sd = normalize(sd + (t*cos(a1) + b*sin(a1))*a2);
+
+		rayQueryEXT rq;
+		rayQueryInitializeEXT(rq, tlas,
+			gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+			SUN_SHADOW_MASK, origin, 0.02, sd, 300.0);
+		while(rayQueryProceedEXT(rq)) { }
+		if(rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT)
+			sunVis = 0.0;
+	}
+
+	imageStore(aoImage, ivec2(px), vec4(vis, sunVis, 0.0, 1.0));
 }

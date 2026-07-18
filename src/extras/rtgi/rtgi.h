@@ -16,6 +16,7 @@ enum eDebugView {
 	DEBUGVIEW_AO,		// ray traced ambient occlusion
 	DEBUGVIEW_GB_NORMAL,	// G-buffer world normals
 	DEBUGVIEW_GB_DEPTH,	// G-buffer linear depth
+	DEBUGVIEW_SUNVIS,	// ray traced sun visibility
 	DEBUGVIEW_MAX
 };
 
@@ -27,6 +28,11 @@ extern bool gbAOEnable;
 extern float gfAOStrength;	// 0 = off, 1 = full ambient modulation
 extern float gfAORadius;
 extern int32 gnAORays;
+// RT sun shadows (vehicle blob-shadow replacement)
+extern bool gbSunShadows;
+
+// true when RT shadows replace the vehicle blob shadows this frame
+bool ReplacingVehicleShadows(void);
 
 // call once the GL context exists (after RW init); safe to call when unsupported
 void Initialise(void);

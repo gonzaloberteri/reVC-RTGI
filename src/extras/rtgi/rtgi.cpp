@@ -50,6 +50,7 @@ bool gbAOEnable = true;
 float gfAOStrength = 0.85f;
 float gfAORadius = 2.5f;
 int32 gnAORays = 2;
+bool gbSunShadows = true;
 
 static bool initialised;
 static uint32 frameCounter;
@@ -130,6 +131,7 @@ static const char *blitFragSrc =
 "	if(u_mode == 1) c = vec3(t.r);\n"
 "	else if(u_mode == 2) c = t.rgb*0.5 + 0.5;\n"
 "	else if(u_mode == 3) c = vec3(exp(-t.r*0.01));\n"
+"	else if(u_mode == 4) c = vec3(t.g);\n"
 "	color = vec4(c, 1.0);\n"
 "}\n";
 
@@ -200,6 +202,7 @@ readConfigFile(void)
 		else if(sscanf(line, "aostrength=%f", &fval) == 1) gfAOStrength = fval;
 		else if(sscanf(line, "aoradius=%f", &fval) == 1) gfAORadius = fval;
 		else if(sscanf(line, "aorays=%d", &ival) == 1) gnAORays = ival;
+		else if(sscanf(line, "sunshadows=%d", &ival) == 1) gbSunShadows = ival != 0;
 		else if(sscanf(line, "shotframes=%d", &ival) == 1) gnShotFrames = ival;
 	}
 	fclose(f);
@@ -436,6 +439,7 @@ DebugRender(void)
 		case DEBUGVIEW_AO: tex = gInterop.aoOutput.glTexture; mode = 1; break;
 		case DEBUGVIEW_GB_NORMAL: tex = gInterop.gbNormal.glTexture; mode = 2; break;
 		case DEBUGVIEW_GB_DEPTH: tex = gInterop.gbDepth.glTexture; mode = 3; break;
+		case DEBUGVIEW_SUNVIS: tex = gInterop.aoOutput.glTexture; mode = 4; break;
 		}
 		glUseProgram(blitProgram);
 		glBindVertexArray(blitVAO);
@@ -460,13 +464,20 @@ DebugRender(void)
 	screenshotDump();
 }
 
+bool
+ReplacingVehicleShadows(void)
+{
+	return initialised && gbRayTracedGI && gbAOEnable && gbSunShadows;
+}
+
 void
 AddDebugMenuEntries(void)
 {
-	static const char *debugViews[] = { "Off", "Interop", "RT Normals", "RT Depth", "RT Instances", "AO", "GB Normal", "GB Depth" };
+	static const char *debugViews[] = { "Off", "Interop", "RT Normals", "RT Depth", "RT Instances", "AO", "GB Normal", "GB Depth", "Sun Vis" };
 	DebugMenuAddVarBool8("RTGI", "Ray traced GI", (int8_t*)&gbRayTracedGI, nil);
 	DebugMenuAddVar("RTGI", "Debug view", &gnDebugView, nil, 1, 0, DEBUGVIEW_MAX-1, debugViews);
 	DebugMenuAddVarBool8("RTGI", "RT ambient occlusion", (int8_t*)&gbAOEnable, nil);
+	DebugMenuAddVarBool8("RTGI", "RT sun shadows", (int8_t*)&gbSunShadows, nil);
 	DebugMenuAddVar("RTGI", "AO strength", &gfAOStrength, nil, 0.05f, 0.0f, 1.0f);
 	DebugMenuAddVar("RTGI", "AO radius", &gfAORadius, nil, 0.5f, 0.5f, 10.0f);
 	DebugMenuAddVar("RTGI", "AO rays", &gnAORays, nil, 1, 1, 8, nil);

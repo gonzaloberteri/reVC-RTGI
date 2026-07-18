@@ -58,7 +58,7 @@ matrixToVk(VkTransformMatrixKHR *dst, rw::Matrix *m)
 }
 
 static void
-emitAtomic(rw::Atomic *atomic, VkCommandBuffer cmd)
+emitAtomic(rw::Atomic *atomic, VkCommandBuffer cmd, uint8_t mask)
 {
 	if(gNumInstances >= MAX_INSTANCES)
 		return;
@@ -77,7 +77,7 @@ emitAtomic(rw::Atomic *atomic, VkCommandBuffer cmd)
 	memset(inst, 0, sizeof(*inst));
 	matrixToVk(&inst->transform, atomic->getFrame()->getLTM());
 	inst->instanceCustomIndex = blas->firstRecord;
-	inst->mask = 0xFF;
+	inst->mask = mask;
 	inst->flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
 	inst->accelerationStructureReference = blas->asAddr;
 	gNumInstances++;
@@ -93,12 +93,17 @@ emitEntity(CEntity *e, VkCommandBuffer cmd)
 	if(e->IsPed())
 		return;	// GPU-skinned; excluded until M9
 
+	// vehicles get their own visibility mask so shadow rays can hit only
+	// them (RT replacement for the blob shadows, without double-shadowing
+	// the world's baked lighting)
+	uint8_t mask = e->IsVehicle() ? MASK_VEHICLES : MASK_STATIC;
+
 	if(RwObjectGetType(e->m_rwObject) == rpATOMIC)
-		emitAtomic((rw::Atomic*)e->m_rwObject, cmd);
+		emitAtomic((rw::Atomic*)e->m_rwObject, cmd, mask);
 	else{
 		rw::Clump *clump = (rw::Clump*)e->m_rwObject;
 		FORLIST(lnk, clump->atomics)
-			emitAtomic(rw::Atomic::fromClump(lnk), cmd);
+			emitAtomic(rw::Atomic::fromClump(lnk), cmd, mask);
 	}
 }
 
