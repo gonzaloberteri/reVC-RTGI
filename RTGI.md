@@ -22,7 +22,13 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
 - **Point lights** — streetlights/headlights feed the GI bounce (NEE)
 - **Emissive night models** — lit windows and neon (VC's timed night
   models) emit their material color into the GI bounce and into wet-road/
-  paint reflections; `emissive=F` config / debug-menu boost knob
+  paint reflections; luminance-gated (> 0.35) so only genuinely bright
+  materials emit; `emissive=F` config / debug-menu boost knob
+- **Headlight cones** — every nearby vehicle with lights on adds a warm
+  ~45° spot light to the GI light set
+- **Real hit albedo** — GI bounces and reflections sample small cached
+  copies of the actual game textures (1024-slot bindless array, UVs
+  interpolated at the hit) instead of per-material mean colors
 - **Reflections** — wet roads mirror the actual scene when it rains, with a
   physically-shaped Fresnel curve (faint sheen straight down, mirror at
   grazing); per-surface reflectivity rides in G-buffer normal.w — vehicles
