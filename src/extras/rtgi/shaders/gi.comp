@@ -44,8 +44,8 @@ layout(push_constant) uniform PC {
 	vec4 camUp;	// w = viewWindow.y
 	vec4 camFwd;
 	vec4 sunDir;	// xyz to sun, w > 0 when up
-	vec4 sunColor;	// rgb, w = unused
-	vec4 skyTop;	// rgb
+	vec4 sunColor;	// rgb, w = emissive boost
+	vec4 skyTop;	// rgb, w = second-bounce RR probability (0 = single bounce)
 	vec4 skyBottom;	// rgb
 	uvec2 size;
 	uint frame;
@@ -183,8 +183,50 @@ void main()
 			if(ndl > 0.0 && !shadowRayHit(hitPos + hitN*0.05, normalize(pc.sunDir.xyz), state))
 				direct = pc.sunColor.rgb * ndl;
 		}
-		// crude sky term at the hit: sky radiance weighted by upness
-		vec3 skyAmb = skyRadiance(hitN) * 0.35;
+		// sky/indirect at the hit: either a crude constant sky term, or a
+		// real second bounce (Russian roulette) that samples sky and
+		// sun-lit surfaces properly
+		vec3 skyAmb = vec3(0.0);
+		float rrP = pc.skyTop.w;
+		if(rrP <= 0.0)
+			skyAmb = skyRadiance(hitN) * 0.35;
+		else if(rnd(state) < rrP){
+			vec3 dir2 = cosineHemisphere(hitN, state);
+			rayQueryEXT rq2;
+			rayQueryInitializeEXT(rq2, tlas, gl_RayFlagsNoneEXT,
+				0xFFu, hitPos + hitN*0.05, 0.02, dir2, 100.0);
+			TRAVERSE(rq2)
+			if(rayQueryGetIntersectionTypeEXT(rq2, true) == gl_RayQueryCommittedIntersectionTriangleEXT){
+				float t2 = rayQueryGetIntersectionTEXT(rq2, true);
+				uint inst2 = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq2, true));
+				uint gidx2 = uint(rayQueryGetIntersectionGeometryIndexEXT(rq2, true));
+				uint prim2 = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq2, true));
+				GeomRecord rec2 = records[inst2 + gidx2];
+				vec3 alb2 = unpackAlbedo(rec2.albedo);	// mean color is enough this deep
+				UintBuf ib2 = UintBuf(rec2.idx);
+				FloatBuf vb2 = FloatBuf(rec2.vtx);
+				uint j0 = ib2.u[prim2*3u+0u];
+				uint j1 = ib2.u[prim2*3u+1u];
+				uint j2 = ib2.u[prim2*3u+2u];
+				vec3 q0 = vec3(vb2.f[j0*3u], vb2.f[j0*3u+1u], vb2.f[j0*3u+2u]);
+				vec3 q1 = vec3(vb2.f[j1*3u], vb2.f[j1*3u+1u], vb2.f[j1*3u+2u]);
+				vec3 q2 = vec3(vb2.f[j2*3u], vb2.f[j2*3u+1u], vb2.f[j2*3u+2u]);
+				mat4x3 o2w2 = rayQueryGetIntersectionObjectToWorldEXT(rq2, true);
+				vec3 hitN2 = normalize(mat3(o2w2) * cross(q1 - q0, q2 - q0));
+				if(dot(hitN2, dir2) > 0.0)
+					hitN2 = -hitN2;
+				vec3 hp2 = hitPos + hitN*0.05 + dir2*t2;
+				vec3 direct2 = vec3(0.0);
+				if(pc.sunDir.w > 0.0){
+					float ndl2 = dot(hitN2, normalize(pc.sunDir.xyz));
+					if(ndl2 > 0.0 && !shadowRayHit(hp2 + hitN2*0.05, normalize(pc.sunDir.xyz), state))
+						direct2 = pc.sunColor.rgb * ndl2;
+				}
+				skyAmb = alb2 * (direct2 + skyRadiance(hitN2)*0.35
+					+ unpackAlbedo(rec2.emissive) * pc.sunColor.w) / rrP;
+			}else
+				skyAmb = skyRadiance(dir2) / rrP;
+		}
 
 		// point lights (street lamps, headlights, explosions): next-event
 		// estimation with one random light

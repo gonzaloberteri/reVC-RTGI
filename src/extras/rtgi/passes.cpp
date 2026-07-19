@@ -872,6 +872,7 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 	gpc.skyTop[0] = CTimeCycle::GetSkyTopRed()/255.0f;
 	gpc.skyTop[1] = CTimeCycle::GetSkyTopGreen()/255.0f;
 	gpc.skyTop[2] = CTimeCycle::GetSkyTopBlue()/255.0f;
+	gpc.skyTop[3] = gbGI2 ? 0.5f : 0.0f;	// second-bounce RR probability
 	gpc.skyBottom[0] = CTimeCycle::GetSkyBottomRed()/255.0f;
 	gpc.skyBottom[1] = CTimeCycle::GetSkyBottomGreen()/255.0f;
 	gpc.skyBottom[2] = CTimeCycle::GetSkyBottomBlue()/255.0f;

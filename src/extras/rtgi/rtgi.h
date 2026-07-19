@@ -39,6 +39,7 @@ extern float gfGIExposure;
 extern bool gbDenoise;
 extern bool gbReflections;
 extern float gfEmissiveBoost;	// night windows/neon radiance multiplier
+extern bool gbGI2;		// second GI bounce (Russian roulette)
 
 // true when RT shadows replace the vehicle blob shadows this frame
 bool ReplacingVehicleShadows(void);
