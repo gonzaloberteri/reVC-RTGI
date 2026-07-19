@@ -275,5 +275,10 @@ void main()
 		radiance = skyRadiance(dir);
 	}
 
+	// firefly clamp: the RR-weighted second bounce and boosted emissives
+	// can spike a single sample far beyond anything the eye needs; the
+	// temporal mean can't absorb rare 10x outliers without sparkling
+	radiance = min(radiance, vec3(6.0));
+
 	imageStore(giRaw, ivec2(px), vec4(radiance, 1.0));
 }

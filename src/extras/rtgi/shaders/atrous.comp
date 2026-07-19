@@ -35,11 +35,16 @@ void main()
 
 	// variance-guided luminance sigma (SVGF-style): where the temporal
 	// history is noisy, tolerate bigger luminance jumps; where it is
-	// converged, tighten so detail (thin geometry) stops shimmering
+	// converged, tighten so detail (thin geometry) stops shimmering.
+	// Young history (disocclusion, moving camera) degenerates to sigma 0
+	// after a single sample — exactly when smoothing matters most — so
+	// bootstrap a wide phi until enough samples exist, else bright 1spp
+	// outliers survive as fireflies in motion.
 	vec3 m = texelFetch(moments, px, 0).rgb;
 	float sigma = sqrt(max(m.g - m.r*m.r, 0.0));
+	float young = 1.0 - min(m.b / 8.0, 1.0);
 	float centerLum = dot(centerColor, vec3(0.299, 0.587, 0.114));
-	float lumPhi = sigma*4.0 + 0.02;
+	float lumPhi = max(sigma*4.0, young*0.6) + 0.02;
 
 	const float kernel[3] = float[](3.0/8.0, 1.0/4.0, 1.0/16.0);
 
