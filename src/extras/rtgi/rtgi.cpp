@@ -415,6 +415,30 @@ Shutdown(void)
 void
 RenderFrame(void)
 {
+	// video-mode change: every size-dependent resource (interop images,
+	// G-buffer, pass images) is baked to the old resolution — rebuild the
+	// whole RT stack through the proven startup/exit paths. Checked even
+	// while the master toggle is off so re-enabling finds sane sizes.
+	{
+		static int32 lastW, lastH;
+		if(lastW == 0){
+			lastW = RsGlobal.maximumWidth;
+			lastH = RsGlobal.maximumHeight;
+		}
+		if(initialised &&
+		   (RsGlobal.maximumWidth != lastW || RsGlobal.maximumHeight != lastH)){
+			RtgiLog("RTGI: resolution changed %dx%d -> %dx%d, recreating\n",
+				lastW, lastH, RsGlobal.maximumWidth, RsGlobal.maximumHeight);
+			bool wasEnabled = gbRayTracedGI;
+			Shutdown();
+			Initialise();
+			gbRayTracedGI = wasEnabled && initialised;
+			gResetGIHistory = true;
+			lastW = RsGlobal.maximumWidth;
+			lastH = RsGlobal.maximumHeight;
+		}
+	}
+
 	if(!initialised || !gbRayTracedGI)
 		return;
 
