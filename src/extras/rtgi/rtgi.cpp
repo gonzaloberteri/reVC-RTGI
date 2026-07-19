@@ -72,6 +72,7 @@ static bool gResetGIHistory = true;
 // streamed in, so automated runs can verify any location
 static float gTeleport[3];
 static bool gWantTeleport;
+static int32 gnForceArea = 0;	// config "area=N": interior for the teleport (eAreaName)
 static int32 gnForceHour = -1;	// config "hour=N": pin the game clock
 static int32 gnForceWeather = -1;	// config "weather=N"
 // a VK submit happened this frame and GL must signal it back, regardless of
@@ -147,12 +148,12 @@ devHarnessTick(void)
 	if(gWantTeleport && tick == 150){
 		CPlayerPed *player = FindPlayerPed();
 		if(player){
-			// leave whatever interior the save was in
-			CGame::currArea = AREA_MAIN_MAP;
-			player->m_area = AREA_MAIN_MAP;
+			// main map by default; "area=N" targets an interior instead
+			CGame::currArea = gnForceArea;
+			player->m_area = gnForceArea;
 			player->Teleport(CVector(gTeleport[0], gTeleport[1], gTeleport[2]));
-			RtgiLog("RTGI: teleported player to %.0f %.0f %.0f\n",
-				gTeleport[0], gTeleport[1], gTeleport[2]);
+			RtgiLog("RTGI: teleported player to %.0f %.0f %.0f (area %d)\n",
+				gTeleport[0], gTeleport[1], gTeleport[2], gnForceArea);
 		}
 		gWantTeleport = false;
 		gResetGIHistory = true;
@@ -323,6 +324,7 @@ readConfigFile(void)
 		else if(sscanf(line, "gi2=%d", &ival) == 1) gbGI2 = ival != 0;
 		else if(sscanf(line, "shotframes=%d", &ival) == 1) gnShotFrames = ival;
 		else if(sscanf(line, "tp=%f,%f,%f", &gTeleport[0], &gTeleport[1], &gTeleport[2]) == 3) gWantTeleport = true;
+		else if(sscanf(line, "area=%d", &ival) == 1) gnForceArea = ival;
 		else if(sscanf(line, "hour=%d", &ival) == 1) gnForceHour = ival;
 		else if(sscanf(line, "weather=%d", &ival) == 1) gnForceWeather = ival;
 	}
