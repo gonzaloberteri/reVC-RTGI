@@ -56,9 +56,16 @@ void BlasRegisterPlugin(void);
 bool BlasInit(void);
 void BlasShutdown(void);
 
-// start a new frame: process deferred frees (safe: caller has fence-waited),
-// reset the per-frame build budget
-void BlasBeginFrame(void);
+// start a new frame: process deferred frees and last frame's compaction
+// queries (safe: caller has fence-waited), reset the per-frame build budget.
+// Records compact-copies into cmd.
+void BlasBeginFrame(VkCommandBuffer cmd);
+
+// after all builds are recorded: queue compacted-size queries for this
+// frame's builds (results consumed next BlasBeginFrame)
+void BlasEndFrame(VkCommandBuffer cmd);
+
+uint32_t BlasCompactionSavedMB(void);
 
 // look up the BLAS for a geometry; if none exists and the build budget
 // allows, records a build into cmd and returns the (buildable) entry.

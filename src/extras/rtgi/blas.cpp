@@ -29,6 +29,23 @@ static std::unordered_map<rw::Geometry*, BlasEntry*> gBlasMap;
 struct DeferredFree { BlasEntry *entry; int framesLeft; };
 static std::vector<DeferredFree> gDeferredFrees;
 
+// --- compaction ---------------------------------------------------------------
+// builds carry ALLOW_COMPACTION; the frame after a build we read the
+// compacted size (fence-proven) and copy into a right-sized AS, retiring
+// the fat original through a handle-level deferred list
+static VkQueryPool gCompactQueryPool;
+static std::vector<rw::Geometry*> gBuiltThisFrame;	// awaiting size query
+static std::vector<rw::Geometry*> gPendingCompact;	// query in flight
+struct RetiredAs { VkAccelerationStructureKHR as; GpuBuffer buf; int framesLeft; };
+static std::vector<RetiredAs> gRetiredAs;
+static uint64_t gCompactSavedBytes;
+
+uint32_t
+BlasCompactionSavedMB(void)
+{
+	return (uint32_t)(gCompactSavedBytes >> 20);
+}
+
 static GeomRecord gRecords[MAX_RECORDS];
 static uint32_t gNumRecords;
 static bool gRecordsDirty;
@@ -326,6 +343,18 @@ BlasShutdown(void)
 	for(auto &df : gDeferredFrees)
 		blasEntryDestroy(df.entry);
 	gDeferredFrees.clear();
+	for(auto &r : gRetiredAs){
+		vkDestroyAccelerationStructureKHR(gVk.device, r.as, nullptr);
+		BufferDestroy(&r.buf);
+	}
+	gRetiredAs.clear();
+	gBuiltThisFrame.clear();
+	gPendingCompact.clear();
+	if(gCompactQueryPool){
+		vkDestroyQueryPool(gVk.device, gCompactQueryPool, nullptr);
+		gCompactQueryPool = VK_NULL_HANDLE;
+	}
+	gCompactSavedBytes = 0;
 	BufferDestroy(&gRecordBuf);
 	for(auto &b : gFrameScratch) BufferDestroy(&b);
 	for(auto &b : gPrevFrameScratch) BufferDestroy(&b);
@@ -337,7 +366,7 @@ BlasShutdown(void)
 }
 
 void
-BlasBeginFrame(void)
+BlasBeginFrame(VkCommandBuffer cmd)
 {
 	gBuildsThisFrame = 0;
 	// scratch from two frames ago is fence-proven idle
@@ -355,6 +384,102 @@ BlasBeginFrame(void)
 		}else
 			i++;
 	}
+	// fat originals whose compact copies are provably done
+	for(size_t i = 0; i < gRetiredAs.size(); ){
+		if(--gRetiredAs[i].framesLeft <= 0){
+			vkDestroyAccelerationStructureKHR(gVk.device, gRetiredAs[i].as, nullptr);
+			BufferDestroy(&gRetiredAs[i].buf);
+			gRetiredAs[i] = gRetiredAs.back();
+			gRetiredAs.pop_back();
+		}else
+			i++;
+	}
+
+	// compact last frame's builds: their size queries are fence-proven
+	if(!gPendingCompact.empty()){
+		uint64_t sizes[BUILDS_PER_FRAME];
+		if(gPendingCompact.size() <= BUILDS_PER_FRAME &&
+		   vkGetQueryPoolResults(gVk.device, gCompactQueryPool, 0, (uint32_t)gPendingCompact.size(),
+		   sizeof(sizes), sizes, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS){
+			for(size_t i = 0; i < gPendingCompact.size(); i++){
+				auto it = gBlasMap.find(gPendingCompact[i]);
+				if(it == gBlasMap.end())
+					continue;	// streamed out meanwhile
+				BlasEntry *e = it->second;
+				uint64_t compSize = sizes[i];
+				if(compSize == 0 || compSize + 4096 >= e->asBuf.size)
+					continue;	// not worth a copy
+				GpuBuffer newBuf;
+				if(!BufferCreate(&newBuf, compSize,
+				   VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, false))
+					continue;
+				VkAccelerationStructureCreateInfoKHR asInfo = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
+				asInfo.buffer = newBuf.buf;
+				asInfo.size = compSize;
+				asInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+				VkAccelerationStructureKHR newAs;
+				if(vkCreateAccelerationStructureKHR(gVk.device, &asInfo, nullptr, &newAs) != VK_SUCCESS){
+					BufferDestroy(&newBuf);
+					continue;
+				}
+				VkCopyAccelerationStructureInfoKHR copy = { VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR };
+				copy.src = e->as;
+				copy.dst = newAs;
+				copy.mode = VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR;
+				vkCmdCopyAccelerationStructureKHR(cmd, &copy);
+
+				gCompactSavedBytes += e->asBuf.size - compSize;
+				RetiredAs retired = { e->as, e->asBuf, DEFERRED_FRAMES };
+				gRetiredAs.push_back(retired);
+				e->as = newAs;
+				e->asBuf = newBuf;
+				VkAccelerationStructureDeviceAddressInfoKHR ai = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR };
+				ai.accelerationStructure = newAs;
+				e->asAddr = vkGetAccelerationStructureDeviceAddressKHR(gVk.device, &ai);
+			}
+		}
+		gPendingCompact.clear();
+	}
+}
+
+void
+BlasEndFrame(VkCommandBuffer cmd)
+{
+	if(gBuiltThisFrame.empty())
+		return;
+	if(gCompactQueryPool == VK_NULL_HANDLE){
+		VkQueryPoolCreateInfo qi = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+		qi.queryType = VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR;
+		qi.queryCount = BUILDS_PER_FRAME;
+		if(vkCreateQueryPool(gVk.device, &qi, nullptr, &gCompactQueryPool) != VK_SUCCESS){
+			gBuiltThisFrame.clear();
+			return;
+		}
+	}
+
+	// this frame's builds must be complete before their sizes are queried
+	VkMemoryBarrier barrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+	barrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+	barrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+		VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+	vkCmdResetQueryPool(cmd, gCompactQueryPool, 0, BUILDS_PER_FRAME);
+	// query index order must match gPendingCompact order exactly
+	VkAccelerationStructureKHR handles[BUILDS_PER_FRAME];
+	uint32_t n = 0;
+	gPendingCompact.clear();
+	for(rw::Geometry *geo : gBuiltThisFrame){
+		auto it = gBlasMap.find(geo);
+		if(it != gBlasMap.end() && n < BUILDS_PER_FRAME){
+			handles[n++] = it->second->as;
+			gPendingCompact.push_back(geo);
+		}
+	}
+	if(n > 0)
+		vkCmdWriteAccelerationStructuresPropertiesKHR(cmd, n, handles,
+			VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR, gCompactQueryPool, 0);
+	gBuiltThisFrame.clear();
 }
 
 // --- build --------------------------------------------------------------------
@@ -530,7 +655,8 @@ BlasGetOrBuild(rw::Geometry *geo, VkCommandBuffer cmd, float emissiveScale)
 	// size query
 	VkAccelerationStructureBuildGeometryInfoKHR build = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
 	build.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-	build.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+	build.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+		VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
 	build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
 	build.geometryCount = (uint32_t)geoms.size();
 	build.pGeometries = geoms.data();
@@ -572,6 +698,7 @@ BlasGetOrBuild(rw::Geometry *geo, VkCommandBuffer cmd, float emissiveScale)
 
 	gBuildsThisFrame++;
 	gBlasMap[geo] = e;
+	gBuiltThisFrame.push_back(geo);	// compact next frame
 	return e;
 }
 

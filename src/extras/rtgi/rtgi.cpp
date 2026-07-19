@@ -474,11 +474,12 @@ RenderFrame(void)
 	bool traced = false;
 	bool timing = false;
 	if(wantTrace){
-		BlasBeginFrame();
+		BlasBeginFrame(gVk.cmdBuf);
 		timing = timestampsBegin(gVk.cmdBuf);
 		if(timing) timestamp(gVk.cmdBuf, TS_BEGIN);
 		TexCacheEnsureDummy(gVk.cmdBuf);	// slot 0 backs unused array entries
 		TlasCollect(gVk.cmdBuf);	// walks game world, queues BLAS builds
+		BlasEndFrame(gVk.cmdBuf);	// compacted-size queries for new builds
 		traced = TlasBuild(gVk.cmdBuf);
 	}
 	if(timing) timestamp(gVk.cmdBuf, TS_TLAS);
@@ -588,8 +589,8 @@ RenderFrame(void)
 	gTsWrittenLastFrame = timing && traced && gbufDone;
 
 	if(traced && (frameCounter % 300) == 0){
-		RtgiLog("RTGI: %u TLAS instances, %d BLASes, %u GI lights (%u headlights), %u cached textures (paused=%d menu=%d fade=%d)\n",
-			TlasInstanceCount(), BlasCount(), GiLightCount(), GiHeadlightCount(), TexCacheCount(),
+		RtgiLog("RTGI: %u TLAS instances, %d BLASes (%u MB compacted away), %u GI lights (%u headlights), %u cached textures (paused=%d menu=%d fade=%d)\n",
+			TlasInstanceCount(), BlasCount(), BlasCompactionSavedMB(), GiLightCount(), GiHeadlightCount(), TexCacheCount(),
 			CTimer::GetIsPaused(), FrontEndMenuManager.m_bMenuActive, CDraw::FadeValue);
 		if(gTsFrames > 0){
 			RtgiLog("RTGI: GPU ms avg over %u frames: blas/tlas %.2f, ao %.2f, gi %.2f, denoise %.2f, refl %.2f\n",
