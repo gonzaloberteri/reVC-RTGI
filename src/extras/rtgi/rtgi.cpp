@@ -451,8 +451,15 @@ RenderFrame(void)
 		}
 	}
 
-	// don't re-record while the previous frame's VK work is in flight
-	vkWaitForFences(gVk.device, 1, &gVk.frameFence, VK_TRUE, UINT64_MAX);
+	// don't re-record while the previous frame's VK work is in flight.
+	// A bounded wait keeps a wedged/lost device from hanging the game.
+	VkResult waitRes = vkWaitForFences(gVk.device, 1, &gVk.frameFence, VK_TRUE, 2000000000ull);
+	if(waitRes != VK_SUCCESS){
+		RtgiLog("RTGI: frame fence wait failed (%d) — disabling ray tracing\n",
+			(int)waitRes);
+		gbRayTracedGI = false;
+		return;
+	}
 	vkResetFences(gVk.device, 1, &gVk.frameFence);
 	timestampsReadPrevious();
 
@@ -629,7 +636,17 @@ RenderFrame(void)
 	submit.pWaitDstStageMask = waitStages;
 	gInterop.firstFrame = false;
 
-	vkQueueSubmit(gVk.queue, 1, &submit, gVk.frameFence);
+	VkResult submitRes = vkQueueSubmit(gVk.queue, 1, &submit, gVk.frameFence);
+	if(submitRes != VK_SUCCESS){
+		// device lost (driver reset, TDR): disable ray tracing for the
+		// session instead of hanging the GL side on a semaphore that
+		// will never signal. The game continues vanilla.
+		RtgiLog("RTGI: vkQueueSubmit failed (%d) — device lost? Disabling ray tracing\n",
+			(int)submitRes);
+		gbRayTracedGI = false;
+		gFrameSubmitted = false;
+		return;
+	}
 	frameCounter++;
 	gFrameSubmitted = true;
 
