@@ -123,5 +123,13 @@ Observations to revisit:
 - Denoiser is now variance-guided; if thin-geometry shimmer persists in
   motion, next steps are variance spatial filtering and a history clamp.
 - GPU timings (native 1440p, 3090): blas/tlas 0.65, ao 1.9, gi 2.6,
-  denoise 2.2, refl 0.2 ms. Background-window runs report inflated
-  numbers (GPU power state) — compare like with like.
+  denoise 2.2, refl 0.2 ms; in rain ~10 ms total (ao 2.6, gi 3.7,
+  refl 0.83 with wet roads + sea). Background-window runs report
+  inflated numbers (GPU power state) — compare like with like.
+- 0xc0000409 fullscreen-rain crash: did NOT reproduce in a 9-minute
+  2560x1440 windowed rain soak (stable timings throughout). Suspect
+  exclusive-fullscreen swapchain interaction; needs a real fullscreen
+  session to chase further.
+- Texture cache reached 975/1024 after ~10 min of streaming; long play
+  sessions will hit the cap and fall back to mean colors — consider 2048
+  or LRU eviction via a raster-destructor hook.
