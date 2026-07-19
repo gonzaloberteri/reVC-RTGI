@@ -40,6 +40,7 @@ extern bool gbDenoise;
 extern bool gbReflections;
 extern float gfEmissiveBoost;	// night windows/neon radiance multiplier
 extern bool gbGI2;		// second GI bounce (Russian roulette)
+extern bool gbPhotoMode;	// progressive accumulation while the camera is still
 
 // true when RT shadows replace the vehicle blob shadows this frame
 bool ReplacingVehicleShadows(void);

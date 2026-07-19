@@ -96,6 +96,8 @@ struct TemporalPushConstants
 	uint32_t size[2];
 	uint32_t frame;
 	uint32_t reset;
+	uint32_t photo;
+	uint32_t pad1, pad2, pad3;
 };
 
 static VkDescriptorSetLayout gGiSetLayout;
@@ -881,7 +883,8 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 	gpc.skyTop[0] = CTimeCycle::GetSkyTopRed()/255.0f;
 	gpc.skyTop[1] = CTimeCycle::GetSkyTopGreen()/255.0f;
 	gpc.skyTop[2] = CTimeCycle::GetSkyTopBlue()/255.0f;
-	gpc.skyTop[3] = gbGI2 ? 0.5f : 0.0f;	// second-bounce RR probability
+	// second-bounce RR probability; photo mode nearly always bounces twice
+	gpc.skyTop[3] = gbPhotoMode ? 0.9f : (gbGI2 ? 0.5f : 0.0f);
 	gpc.skyBottom[0] = CTimeCycle::GetSkyBottomRed()/255.0f;
 	gpc.skyBottom[1] = CTimeCycle::GetSkyBottomGreen()/255.0f;
 	gpc.skyBottom[2] = CTimeCycle::GetSkyBottomBlue()/255.0f;
@@ -946,9 +949,19 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 		memcpy(tpc.prevCamPos, gPrevCam, sizeof(gPrevCam));
 	else
 		resetHistory = true;
+	// photo mode accumulates a true average, which would smear under any
+	// camera motion — restart the average the moment the camera moves
+	if(gbPhotoMode && gHavePrevCam){
+		float moved = 0.0f;
+		for(int i = 0; i < 16; i++)
+			moved += fabsf(tpc.camPos[i] - gPrevCam[i]);
+		if(moved > 1e-4f)
+			resetHistory = true;
+	}
 	tpc.size[0] = w; tpc.size[1] = h;
 	tpc.frame = frame;
 	tpc.reset = resetHistory ? 1 : 0;
+	tpc.photo = gbPhotoMode ? 1 : 0;
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gTemporalPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gTemporalPipeLayout, 0, 1, &gTemporalDescSet, 0, nullptr);
