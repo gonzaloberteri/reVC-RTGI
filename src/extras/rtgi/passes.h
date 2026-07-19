@@ -25,6 +25,9 @@ void PassesDenoiseGI(VkCommandBuffer cmd);
 // mirror reflections into the shared reflection image
 void PassesTraceReflections(VkCommandBuffer cmd, uint32_t frame);
 
+// lights fed to the last GI pass (game point lights + headlight cones)
+uint32_t GiLightCount(void);
+
 }
 
 #endif

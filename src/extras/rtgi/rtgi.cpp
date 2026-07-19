@@ -61,7 +61,7 @@ float gfGIBlend = 0.6f;
 float gfGIExposure = 1.0f;
 bool gbDenoise = true;
 bool gbReflections = true;
-float gfEmissiveBoost = 2.0f;
+float gfEmissiveBoost = 1.0f;
 
 static bool initialised;
 static uint32 frameCounter;
@@ -466,8 +466,8 @@ RenderFrame(void)
 	vkEndCommandBuffer(gVk.cmdBuf);
 
 	if(traced && (frameCounter % 300) == 0)
-		RtgiLog("RTGI: %u TLAS instances, %d BLASes (paused=%d menu=%d fade=%d)\n",
-			TlasInstanceCount(), BlasCount(),
+		RtgiLog("RTGI: %u TLAS instances, %d BLASes, %u GI lights (paused=%d menu=%d fade=%d)\n",
+			TlasInstanceCount(), BlasCount(), GiLightCount(),
 			CTimer::GetIsPaused(), FrontEndMenuManager.m_bMenuActive, CDraw::FadeValue);
 
 	VkSemaphore waitSems[2];

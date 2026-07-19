@@ -328,15 +328,23 @@ BlasGetOrBuild(rw::Geometry *geo, VkCommandBuffer cmd, float emissiveScale)
 		rec.vtxAddr = e->vtxBuf.addr;
 		rec.idxAddr = e->idxBuf.addr + matOffset[m]*3*sizeof(uint32_t);
 		rec.albedo = materialAlbedo(m < geo->matList.numMaterials ? geo->matList.materials[m] : nil);
-		// night-model materials emit their own (mean) color scaled
+		// night-model materials emit their own (mean) color, but only the
+		// bright ones (neon tubes, lit windows) — large dim facade surfaces
+		// of night meshes must not become area lights, and emission scales
+		// with luminance so the brightest signs dominate
+		rec.emissive = 0;
 		if(emissiveScale > 0.0f){
 			uint32_t a = rec.albedo;
-			uint32_t r = (uint32_t)((a & 0xFF) * emissiveScale); if(r > 255) r = 255;
-			uint32_t g = (uint32_t)(((a >> 8) & 0xFF) * emissiveScale); if(g > 255) g = 255;
-			uint32_t b = (uint32_t)(((a >> 16) & 0xFF) * emissiveScale); if(b > 255) b = 255;
-			rec.emissive = r | (g << 8) | (b << 16);
-		}else
-			rec.emissive = 0;
+			float lr = (a & 0xFF)/255.0f, lg = ((a >> 8) & 0xFF)/255.0f, lb = ((a >> 16) & 0xFF)/255.0f;
+			float lum = 0.299f*lr + 0.587f*lg + 0.114f*lb;
+			if(lum > 0.35f){
+				float s = emissiveScale * lum;
+				uint32_t r = (uint32_t)((a & 0xFF) * s); if(r > 255) r = 255;
+				uint32_t g = (uint32_t)(((a >> 8) & 0xFF) * s); if(g > 255) g = 255;
+				uint32_t b = (uint32_t)(((a >> 16) & 0xFF) * s); if(b > 255) b = 255;
+				rec.emissive = r | (g << 8) | (b << 16);
+			}
+		}
 	}
 	e->numRanges = numRanges;
 	gRecordsDirty = true;

@@ -16,6 +16,9 @@
 #include "Timecycle.h"
 #include "PointLights.h"
 #include "Weather.h"
+#include "Pools.h"
+#include "Vehicle.h"
+#include "Camera.h"
 #include "rtgi.h"
 
 #include "shaders/obj/primary_comp.inc"
@@ -125,10 +128,20 @@ static GpuImage gAtrousScratch;
 // game point lights snapshot for the GI pass
 struct GpuPointLight
 {
-	float posRadius[4];
-	float color[4];
+	float posRadius[4];	// xyz, w = radius
+	float color[4];		// rgb, w = spot cos cutoff (0 = omni)
+	float dir[4];		// xyz spot direction
 };
+// game CPointLights (32) + vehicle headlight cones
+enum { MAX_GI_LIGHTS = 96 };
 static GpuBuffer gLightBuf;
+static uint32_t gLastNumLights;
+
+uint32_t
+GiLightCount(void)
+{
+	return gLastNumLights;
+}
 
 // reflections
 struct ReflPushConstants
@@ -725,14 +738,15 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 	uint32_t numLights = 0;
 	{
 		if(gLightBuf.buf == nil)
-			BufferCreate(&gLightBuf, NUMPOINTLIGHTS * sizeof(GpuPointLight),
+			BufferCreate(&gLightBuf, MAX_GI_LIGHTS * sizeof(GpuPointLight),
 				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
 		GpuPointLight *dst = (GpuPointLight*)gLightBuf.mapped;
 		if(dst){
-			for(int i = 0; i < CPointLights::NumLights && numLights < NUMPOINTLIGHTS; i++){
+			// game point lights; skip LIGHT_DIRECTIONAL (the player's
+			// headlight) — proper cones are added for all vehicles below
+			for(int i = 0; i < CPointLights::NumLights && numLights < MAX_GI_LIGHTS; i++){
 				CRegisteredPointLight *l = &CPointLights::aLights[i];
-				if(l->type != CPointLights::LIGHT_POINT &&
-				   l->type != CPointLights::LIGHT_DIRECTIONAL)
+				if(l->type != CPointLights::LIGHT_POINT)
 					continue;
 				GpuPointLight *g = &dst[numLights++];
 				g->posRadius[0] = l->coors.x;
@@ -743,6 +757,37 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 				g->color[1] = l->green;
 				g->color[2] = l->blue;
 				g->color[3] = 0.0f;
+				g->dir[0] = g->dir[1] = g->dir[2] = g->dir[3] = 0.0f;
+			}
+
+			// headlight cones for every nearby vehicle with lights on
+			CVector camPos = TheCamera.GetPosition();
+			CVehiclePool *pool = CPools::GetVehiclePool();
+			for(int i = 0; pool && i < pool->GetSize() && numLights < MAX_GI_LIGHTS; i++){
+				CVehicle *veh = pool->GetSlot(i);
+				if(veh == nil || !veh->bLightsOn || veh->m_rwObject == nil)
+					continue;
+				CVector d = veh->GetPosition() - camPos;
+				if(d.MagnitudeSqr() > sq(90.0f))
+					continue;
+				CVector fwd = veh->GetForward();
+				CVector pos = veh->GetPosition() + fwd*2.2f;
+				// aim slightly down so the beam pools on the road ahead
+				CVector dir = fwd - veh->GetUp()*0.25f;
+				dir.Normalise();
+				GpuPointLight *g = &dst[numLights++];
+				g->posRadius[0] = pos.x;
+				g->posRadius[1] = pos.y;
+				g->posRadius[2] = pos.z;
+				g->posRadius[3] = 22.0f;
+				g->color[0] = 1.0f;
+				g->color[1] = 0.92f;
+				g->color[2] = 0.72f;
+				g->color[3] = 0.70f;	// spot cos cutoff (~45 deg cone)
+				g->dir[0] = dir.x;
+				g->dir[1] = dir.y;
+				g->dir[2] = dir.z;
+				g->dir[3] = 0.0f;
 			}
 		}
 	}
@@ -800,6 +845,7 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 	gpc.size[0] = w; gpc.size[1] = h;
 	gpc.frame = frame;
 	gpc.pad0 = numLights;
+	gLastNumLights = numLights;
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gGiPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gGiPipeLayout, 0, 1, &gGiDescSet, 0, nullptr);

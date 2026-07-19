@@ -28,7 +28,8 @@ layout(binding = 4, std430) readonly buffer Records { GeomRecord records[]; };
 
 struct PointLight {
 	vec4 posRadius;	// xyz, w = radius
-	vec4 color;	// rgb
+	vec4 color;	// rgb, w = spot cos cutoff (0 = omni)
+	vec4 dir;	// xyz spot direction (headlight cones)
 };
 layout(binding = 5, std430) readonly buffer Lights { PointLight lights[]; };
 
@@ -179,7 +180,13 @@ void main()
 			if(d < L.posRadius.w && d > 0.01){
 				toL /= d;
 				float ndl = dot(hitN, toL);
-				if(ndl > 0.0){
+				// spot cone (headlights): -toL is light-to-surface
+				float spot = 1.0;
+				if(L.color.w > 0.0){
+					float cd = dot(L.dir.xyz, -toL);
+					spot = smoothstep(L.color.w, L.color.w + 0.12, cd);
+				}
+				if(ndl > 0.0 && spot > 0.0){
 					rayQueryEXT srq;
 					rayQueryInitializeEXT(srq, tlas,
 						gl_RayFlagsTerminateOnFirstHitEXT,
@@ -187,7 +194,7 @@ void main()
 					TRAVERSE(srq)
 					if(rayQueryGetIntersectionTypeEXT(srq, true) == gl_RayQueryCommittedIntersectionNoneEXT){
 						float falloff = 1.0 - d/L.posRadius.w;
-						pointLight = L.color.rgb * (ndl * falloff * float(pc.numLights));
+						pointLight = L.color.rgb * (ndl * falloff * spot * float(pc.numLights));
 					}
 				}
 			}
