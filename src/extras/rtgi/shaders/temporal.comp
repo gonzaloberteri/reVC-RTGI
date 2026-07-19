@@ -12,6 +12,8 @@ layout(binding = 3) uniform sampler2D gbDepth;
 layout(binding = 4, rgba16f) uniform image2D outAccum;
 layout(binding = 5, rgba16f) uniform image2D outShared;	// GL-visible copy
 layout(binding = 6, r32f) uniform image2D outPrevDepth;	// depth for next frame
+layout(binding = 7) uniform sampler2D prevMoments;	// r = E[lum], g = E[lum^2], b = history length
+layout(binding = 8, rgba16f) uniform image2D outMoments;
 
 layout(push_constant) uniform PC {
 	vec4 camPos;
@@ -36,8 +38,12 @@ void main()
 	vec2 uv = (vec2(px) + 0.5) / vec2(pc.size);
 	float depth = texelFetch(gbDepth, ivec2(px), 0).r;
 	vec3 cur = imageLoad(giRaw, ivec2(px)).rgb;
+	float lum = dot(cur, vec3(0.299, 0.587, 0.114));
 
 	vec3 result = cur;
+	// luminance moments drive the denoiser's variance estimate; history
+	// length lets fresh disocclusions converge fast, then settle
+	vec3 moments = vec3(lum, lum*lum, 1.0);
 	if(pc.reset == 0u && depth > 0.0){
 		// world position of this pixel
 		float u = uv.x*2.0 - 1.0;
@@ -57,7 +63,14 @@ void main()
 				// depth the reprojected point should have in the old camera
 				if(pd > 0.0 && abs(pd - pz) / pz < 0.05){
 					vec3 hist = texture(prevAccum, prevUv).rgb;
-					result = mix(hist, cur, 0.08);
+					vec3 prevM = texture(prevMoments, prevUv).rgb;
+					float n = min(prevM.b + 1.0, 64.0);
+					float alphaC = max(1.0/n, 0.08);
+					float alphaM = max(1.0/n, 0.2);
+					result = mix(hist, cur, alphaC);
+					moments.r = mix(prevM.r, lum, alphaM);
+					moments.g = mix(prevM.g, lum*lum, alphaM);
+					moments.b = n;
 				}
 			}
 		}
@@ -66,4 +79,5 @@ void main()
 	imageStore(outAccum, ivec2(px), vec4(result, 1.0));
 	imageStore(outShared, ivec2(px), vec4(result, 1.0));
 	imageStore(outPrevDepth, ivec2(px), vec4(depth, 0.0, 0.0, 0.0));
+	imageStore(outMoments, ivec2(px), vec4(moments, 0.0));
 }

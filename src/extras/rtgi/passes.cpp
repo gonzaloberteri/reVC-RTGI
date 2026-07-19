@@ -123,6 +123,7 @@ static VkDescriptorSet gAtrousDescSets[3];	// one per iteration
 static GpuImage gGiRaw;
 static GpuImage gGiAccum[2];
 static GpuImage gDepthHist[2];
+static GpuImage gMoments[2];	// r = E[lum], g = E[lum^2], b = history length
 static GpuImage gAtrousScratch;
 
 // game point lights snapshot for the GI pass
@@ -396,8 +397,8 @@ PassesInit(void)
 	// --- temporal pass ---------------------------------------------------
 
 	{
-	VkDescriptorSetLayoutBinding b[7] = {};
-	VkDescriptorType types[7] = {
+	VkDescriptorSetLayoutBinding b[9] = {};
+	VkDescriptorType types[9] = {
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// giRaw
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// prevAccum
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// prevDepth
@@ -405,15 +406,17 @@ PassesInit(void)
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// outAccum
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// outShared (GL)
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// outPrevDepth
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// prevMoments
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// outMoments
 	};
-	for(int i = 0; i < 7; i++){
+	for(int i = 0; i < 9; i++){
 		b[i].binding = i;
 		b[i].descriptorType = types[i];
 		b[i].descriptorCount = 1;
 		b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 	}
 	VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-	li.bindingCount = 7;
+	li.bindingCount = 9;
 	li.pBindings = b;
 	if(vkCreateDescriptorSetLayout(gVk.device, &li, nullptr, &gTemporalSetLayout) != VK_SUCCESS)
 		return false;
@@ -491,27 +494,30 @@ PassesInit(void)
 	   !ImageCreate(&gGiAccum[1], w, h, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage) ||
 	   !ImageCreate(&gDepthHist[0], w, h, VK_FORMAT_R32_SFLOAT, giUsage) ||
 	   !ImageCreate(&gDepthHist[1], w, h, VK_FORMAT_R32_SFLOAT, giUsage) ||
+	   !ImageCreate(&gMoments[0], w, h, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage) ||
+	   !ImageCreate(&gMoments[1], w, h, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage) ||
 	   !ImageCreate(&gAtrousScratch, w, h, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage))
 		return false;
 
 	// --- a-trous denoiser ------------------------------------------------
 
 	{
-	VkDescriptorSetLayoutBinding b[4] = {};
-	VkDescriptorType types[4] = {
+	VkDescriptorSetLayoutBinding b[5] = {};
+	VkDescriptorType types[5] = {
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// in
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// out
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// normal
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// depth
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// moments (variance)
 	};
-	for(int i = 0; i < 4; i++){
+	for(int i = 0; i < 5; i++){
 		b[i].binding = i;
 		b[i].descriptorType = types[i];
 		b[i].descriptorCount = 1;
 		b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 	}
 	VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-	li.bindingCount = 4;
+	li.bindingCount = 5;
 	li.pBindings = b;
 	if(vkCreateDescriptorSetLayout(gVk.device, &li, nullptr, &gAtrousSetLayout) != VK_SUCCESS)
 		return false;
@@ -562,6 +568,8 @@ PassesShutdown(void)
 	ImageDestroy(&gGiAccum[1]);
 	ImageDestroy(&gDepthHist[0]);
 	ImageDestroy(&gDepthHist[1]);
+	ImageDestroy(&gMoments[0]);
+	ImageDestroy(&gMoments[1]);
 	if(gGiPipeline) vkDestroyPipeline(gVk.device, gGiPipeline, nullptr);
 	if(gGiPipeLayout) vkDestroyPipelineLayout(gVk.device, gGiPipeLayout, nullptr);
 	if(gGiSetLayout) vkDestroyDescriptorSetLayout(gVk.device, gGiSetLayout, nullptr);
@@ -743,10 +751,11 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 
 	// first use: everything to GENERAL once
 	if(!gGiImagesInitialised){
-		VkImageMemoryBarrier barriers[6] = {};
-		VkImage images[6] = { gGiRaw.image, gGiAccum[0].image, gGiAccum[1].image,
-			gDepthHist[0].image, gDepthHist[1].image, gAtrousScratch.image };
-		for(int i = 0; i < 6; i++){
+		VkImageMemoryBarrier barriers[8] = {};
+		VkImage images[8] = { gGiRaw.image, gGiAccum[0].image, gGiAccum[1].image,
+			gDepthHist[0].image, gDepthHist[1].image, gAtrousScratch.image,
+			gMoments[0].image, gMoments[1].image };
+		for(int i = 0; i < 8; i++){
 			barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 			barriers[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 			barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -757,7 +766,7 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 			barriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 		}
 		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			0, 0, nullptr, 0, nullptr, 6, barriers);
+			0, 0, nullptr, 0, nullptr, 8, barriers);
 		gGiImagesInitialised = true;
 		resetHistory = true;
 	}
@@ -902,20 +911,25 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 	VkDescriptorImageInfo outAccumInfo = { VK_NULL_HANDLE, gGiAccum[cur].view, VK_IMAGE_LAYOUT_GENERAL };
 	VkDescriptorImageInfo outSharedInfo = { VK_NULL_HANDLE, gInterop.giOutput.view, VK_IMAGE_LAYOUT_GENERAL };
 	VkDescriptorImageInfo outPrevDepthInfo = { VK_NULL_HANDLE, gDepthHist[cur].view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo prevMomentsInfo = { gInterop.sampler, gMoments[prev].view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo outMomentsInfo = { VK_NULL_HANDLE, gMoments[cur].view, VK_IMAGE_LAYOUT_GENERAL };
 
-	VkWriteDescriptorSet writes[7] = {};
-	const VkDescriptorImageInfo *infos[7] = { &rawInfo, &prevAccumInfo, &prevDepthInfo,
-		&depthInfo, &outAccumInfo, &outSharedInfo, &outPrevDepthInfo };
-	VkDescriptorType types[7] = {
+	VkWriteDescriptorSet writes[9] = {};
+	const VkDescriptorImageInfo *infos[9] = { &rawInfo, &prevAccumInfo, &prevDepthInfo,
+		&depthInfo, &outAccumInfo, &outSharedInfo, &outPrevDepthInfo,
+		&prevMomentsInfo, &outMomentsInfo };
+	VkDescriptorType types[9] = {
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 	};
-	for(int i = 0; i < 7; i++){
+	for(int i = 0; i < 9; i++){
 		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[i].dstSet = gTemporalDescSet;
 		writes[i].dstBinding = i;
@@ -923,7 +937,7 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 		writes[i].descriptorType = types[i];
 		writes[i].pImageInfo = infos[i];
 	}
-	vkUpdateDescriptorSets(gVk.device, 7, writes, 0, nullptr);
+	vkUpdateDescriptorSets(gVk.device, 9, writes, 0, nullptr);
 	}
 
 	TemporalPushConstants tpc = {};
@@ -1037,15 +1051,18 @@ PassesDenoiseGI(VkCommandBuffer cmd)
 		VkDescriptorImageInfo outInfo = { VK_NULL_HANDLE, dsts[i], VK_IMAGE_LAYOUT_GENERAL };
 		VkDescriptorImageInfo normalInfo = { gInterop.sampler, gInterop.gbNormal.view, VK_IMAGE_LAYOUT_GENERAL };
 		VkDescriptorImageInfo depthInfo = { gInterop.sampler, gInterop.gbDepth.view, VK_IMAGE_LAYOUT_GENERAL };
-		VkWriteDescriptorSet writes[4] = {};
-		const VkDescriptorImageInfo *infos[4] = { &inInfo, &outInfo, &normalInfo, &depthInfo };
-		VkDescriptorType types[4] = {
+		// temporal just wrote gMoments[1 - gAccumIndex] (index flipped after)
+		VkDescriptorImageInfo momentsInfo = { gInterop.sampler, gMoments[1 - gAccumIndex].view, VK_IMAGE_LAYOUT_GENERAL };
+		VkWriteDescriptorSet writes[5] = {};
+		const VkDescriptorImageInfo *infos[5] = { &inInfo, &outInfo, &normalInfo, &depthInfo, &momentsInfo };
+		VkDescriptorType types[5] = {
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		};
-		for(int j = 0; j < 4; j++){
+		for(int j = 0; j < 5; j++){
 			writes[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			writes[j].dstSet = gAtrousDescSets[i];
 			writes[j].dstBinding = j;
@@ -1053,7 +1070,7 @@ PassesDenoiseGI(VkCommandBuffer cmd)
 			writes[j].descriptorType = types[j];
 			writes[j].pImageInfo = infos[j];
 		}
-		vkUpdateDescriptorSets(gVk.device, 4, writes, 0, nullptr);
+		vkUpdateDescriptorSets(gVk.device, 5, writes, 0, nullptr);
 
 		AtrousPushConstants pc = {};
 		pc.size[0] = w; pc.size[1] = h;
