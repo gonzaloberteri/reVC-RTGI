@@ -30,6 +30,9 @@
 #include "WaterLevel.h"
 #include "SurfaceTable.h"
 #include "WaterCreatures.h"
+#ifdef RTGI
+#include "extras/rtgi/gbuffer.h"
+#endif
 
 #define RwIm3DVertexSet_RGBA(vert, rgba) RwIm3DVertexSetRGBA(vert, rgba.red, rgba.green, rgba.blue, rgba.alpha) // (RwRGBAAssign(&(_dst)->color, &_src))
 
@@ -918,8 +921,14 @@ CWaterLevel::RenderWater()
 	float windAddUV = CWeather::WindClipped * 0.0005f + 0.0006f;
 	
 	float fAngle = (CTimer::GetTimeInMilliseconds() & 4095) * (TWOPI / 4096.0f);
-	
-	if ( !CTimer::GetIsPaused() )
+
+	if ( !CTimer::GetIsPaused()
+#ifdef RTGI
+	// the RTGI G-buffer prepass re-renders the water each frame; only the
+	// real pass may advance the texture animation
+	  && !RayTracedGI::gbWaterGbufPass
+#endif
+	)
 	{
 		TEXTURE_ADDU       += windAddUV;
 		TEXTURE_ADDV       += windAddUV;
@@ -1172,7 +1181,14 @@ CWaterLevel::RenderWater()
 
 	RwRenderStateSet(rwRENDERSTATESRCBLEND, (void *)rwBLENDSRCALPHA);
 	RwRenderStateSet(rwRENDERSTATEDESTBLEND, (void *)rwBLENDINVSRCALPHA);
-	
+
+#ifdef RTGI
+	// the RTGI G-buffer prepass only wants the water geometry; the side
+	// effects (birds, ships, sea life) must run once per frame
+	if ( RayTracedGI::gbWaterGbufPass )
+		return;
+#endif
+
 	if ( WavesCalculatedThisFrame )
 	{
 		RenderSeaBirds();
@@ -1180,7 +1196,7 @@ CWaterLevel::RenderWater()
 		CParticle::HandleShipsAtHorizonStuff();
 		HandleBeachToysStuff();
 	}
-	
+
 	if ( _bSeaLife )
 		HandleSeaLifeForms();
 

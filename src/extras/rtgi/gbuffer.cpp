@@ -19,6 +19,7 @@
 #include "World.h"
 #include "Timecycle.h"
 #include "ModelInfo.h"
+#include "WaterLevel.h"
 
 namespace RayTracedGI {
 
@@ -29,7 +30,12 @@ static rw::gl3::Shader *gGbufSkinShader;
 static rw::gl3::Shader *gWorldShader;
 static rw::gl3::Shader *gVehicleShader;
 static rw::gl3::Shader *gSkinShader;
+static rw::gl3::Shader *gWaterShader;
 static int gWidth, gHeight;
+
+// true while the sea is being re-rendered into the G-buffer; WaterLevel
+// skips its texture-anim advance so the real pass keeps vanilla speed
+bool gbWaterGbufPass;
 
 static int32 u_aoTex;
 static int32 u_rtgiParams;
@@ -104,6 +110,15 @@ GbufferInit(int width, int height)
 	if(gSkinShader == nil)
 		return false;
 	}
+	{
+#include "shaders/obj/rtgiWater_vert.inc"
+#include "shaders/obj/rtgiWater_frag.inc"
+	const char *vs[] = { shaderDecl, header_vert_src, rtgiWater_vert_src, nil };
+	const char *fs[] = { shaderDecl, header_frag_src, rtgiWater_frag_src, nil };
+	gWaterShader = Shader::create(vs, fs);
+	if(gWaterShader == nil)
+		return false;
+	}
 
 	glGenRenderbuffers(1, &gDepthRbo);
 	glBindRenderbuffer(GL_RENDERBUFFER, gDepthRbo);
@@ -134,6 +149,7 @@ GbufferShutdown(void)
 	if(gWorldShader){ gWorldShader->destroy(); gWorldShader = nil; }
 	if(gVehicleShader){ gVehicleShader->destroy(); gVehicleShader = nil; }
 	if(gSkinShader){ gSkinShader->destroy(); gSkinShader = nil; }
+	if(gWaterShader){ gWaterShader->destroy(); gWaterShader = nil; }
 	if(gFbo){ glDeleteFramebuffers(1, &gFbo); gFbo = 0; }
 	if(gDepthRbo){ glDeleteRenderbuffers(1, &gDepthRbo); gDepthRbo = 0; }
 }
@@ -231,6 +247,28 @@ GbufferRender(void)
 			FORLIST(lnk, clump->atomics)
 				gbufDrawAtomic(rw::Atomic::fromClump(lnk), reflW);
 		}
+	}
+
+	// sea surface: re-render the water through the im3d override so the
+	// reflection pass can trace from it (marker reflW = 2). RenderWater
+	// covers only sectors beyond 500m; the near (wavy) water lives in
+	// RenderTransparentWater. Layer 1 skips the near-camera matFX mask
+	// atomic, which would bypass the override and scribble into the
+	// attachments; vertex alpha is forced off so nothing blends normals.
+	{
+		gGbufShader->use();
+		float waterParams[4] = { 2.0f, 0.0f, 0.0f, 0.0f };
+		glUniform4fv(U(u_gbParams), 1, waterParams);
+		int32 prevLayers = CWaterLevel::m_nRenderWaterLayers;
+		CWaterLevel::m_nRenderWaterLayers = 1;
+		gbWaterGbufPass = true;
+		im3dOverrideShader = gGbufShader;
+		rw::SetRenderState(rw::VERTEXALPHA, FALSE);
+		CWaterLevel::RenderWater();
+		CWaterLevel::RenderTransparentWater();
+		im3dOverrideShader = nil;
+		gbWaterGbufPass = false;
+		CWaterLevel::m_nRenderWaterLayers = prevLayers;
 	}
 
 	glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
@@ -385,6 +423,32 @@ PedRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 
 	pedDrawMeshes(atomic->geometry->flags, header);
 	return true;
+}
+
+// wrap the forward water draws: the im3d override samples the RT
+// reflection buffer on top of the vanilla water look
+void
+WaterRenderBegin(void)
+{
+	using namespace rw::gl3;
+
+	if(!gbRayTracedGI || !gbAOEnable || !gbReflections || gWaterShader == nil)
+		return;
+
+	gWaterShader->use();
+	glActiveTexture(GL_TEXTURE5);
+	glBindTexture(GL_TEXTURE_2D, gInterop.reflOutput.glTexture);
+	glActiveTexture(GL_TEXTURE0);
+	glUniform1i(U(u_reflTex), 5);
+	float params[4] = { 0.0f, 1.0f/gWidth, 1.0f/gHeight, 0.0f };
+	glUniform4fv(U(u_rtgiParams), 1, params);
+	im3dOverrideShader = gWaterShader;
+}
+
+void
+WaterRenderEnd(void)
+{
+	rw::gl3::im3dOverrideShader = nil;
 }
 
 bool

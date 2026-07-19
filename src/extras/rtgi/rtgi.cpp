@@ -27,6 +27,7 @@
 #include "Game.h"
 #include "Clock.h"
 #include "Weather.h"
+#include "Camera.h"
 
 namespace RayTracedGI {
 
@@ -70,7 +71,8 @@ static bool gResetGIHistory = true;
 
 // dev/testing: config "tp=x,y,z" teleports the player once the world is
 // streamed in, so automated runs can verify any location
-static float gTeleport[3];
+static float gTeleport[4];	// x,y,z + optional heading in degrees
+static bool gTeleportHasHeading;
 static bool gWantTeleport;
 static int32 gnForceArea = 0;	// config "area=N": interior for the teleport (eAreaName)
 static int32 gnForceHour = -1;	// config "hour=N": pin the game clock
@@ -152,8 +154,18 @@ devHarnessTick(void)
 			CGame::currArea = gnForceArea;
 			player->m_area = gnForceArea;
 			player->Teleport(CVector(gTeleport[0], gTeleport[1], gTeleport[2]));
-			RtgiLog("RTGI: teleported player to %.0f %.0f %.0f (area %d)\n",
-				gTeleport[0], gTeleport[1], gTeleport[2], gnForceArea);
+			if(gTeleportHasHeading){
+				// heading in degrees, 0 = north (+y); snap the follow
+				// camera behind so shots frame a known direction
+				float a = DEGTORAD(gTeleport[3]);
+				player->m_fRotationCur = a;
+				player->m_fRotationDest = a;
+				player->GetMatrix().SetRotateZOnly(a);
+				TheCamera.SetCameraDirectlyBehindForFollowPed_CamOnAString();
+			}
+			RtgiLog("RTGI: teleported player to %.0f %.0f %.0f (area %d heading %.0f)\n",
+				gTeleport[0], gTeleport[1], gTeleport[2], gnForceArea,
+				gTeleportHasHeading ? gTeleport[3] : -1.0f);
 		}
 		gWantTeleport = false;
 		gResetGIHistory = true;
@@ -323,6 +335,10 @@ readConfigFile(void)
 		else if(sscanf(line, "emissive=%f", &fval) == 1) gfEmissiveBoost = fval;
 		else if(sscanf(line, "gi2=%d", &ival) == 1) gbGI2 = ival != 0;
 		else if(sscanf(line, "shotframes=%d", &ival) == 1) gnShotFrames = ival;
+		else if(sscanf(line, "tp=%f,%f,%f,%f", &gTeleport[0], &gTeleport[1], &gTeleport[2], &gTeleport[3]) == 4){
+			gWantTeleport = true;
+			gTeleportHasHeading = true;
+		}
 		else if(sscanf(line, "tp=%f,%f,%f", &gTeleport[0], &gTeleport[1], &gTeleport[2]) == 3) gWantTeleport = true;
 		else if(sscanf(line, "area=%d", &ival) == 1) gnForceArea = ival;
 		else if(sscanf(line, "hour=%d", &ival) == 1) gnForceHour = ival;

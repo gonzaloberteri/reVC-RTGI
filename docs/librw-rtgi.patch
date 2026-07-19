@@ -1,0 +1,35 @@
+diff --git a/src/gl/gl3immed.cpp b/src/gl/gl3immed.cpp
+index b66b7e5..dc3083f 100644
+--- a/src/gl/gl3immed.cpp
++++ b/src/gl/gl3immed.cpp
+@@ -193,6 +193,7 @@ im2DRenderIndexedPrimitive(PrimitiveType primType,
+ 
+ 
+ static Shader *im3dShader;
++Shader *im3dOverrideShader;
+ static AttribDesc im3dattribDesc[4] = {
+ 	{ ATTRIB_POS,        GL_FLOAT,         GL_FALSE, 3,
+ 		sizeof(Im3DVertex), 0 },
+@@ -259,7 +260,9 @@ im3DTransform(void *vertices, int32 numVertices, Matrix *world, uint32 flags)
+ 		world = &ident;
+ 	}
+ 	setWorldMatrix(world);
+-	if(flags & im3d::LIGHTING){
++	if(im3dOverrideShader)
++		im3dOverrideShader->use();
++	else if(flags & im3d::LIGHTING){
+ 		setMaterial(im3dMaterialColor, im3dSurfaceProps);
+ 		int32 vsBits = lightingCB();
+ 		defaultShader_fullLight->use();
+diff --git a/src/gl/rwgl3.h b/src/gl/rwgl3.h
+index f7d963d..575e15a 100644
+--- a/src/gl/rwgl3.h
++++ b/src/gl/rwgl3.h
+@@ -191,6 +191,7 @@ extern const char *header_vert_src;
+ extern const char *header_frag_src;
+ 
+ extern Shader *im2dOverrideShader;
++extern Shader *im3dOverrideShader;
+ 
+ // per Scene
+ void setProjectionMatrix(float32*);

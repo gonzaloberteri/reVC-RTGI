@@ -75,6 +75,9 @@
 #include "custompipes.h"
 #ifdef RTGI
 #include "rtgi/rtgi.h"
+#ifdef RTGI
+#include "rtgi/gbuffer.h"
+#endif
 #endif
 #include "screendroplets.h"
 #include "VarConsole.h"
@@ -1348,11 +1351,23 @@ RenderScene(void)
 	CCoronas::RenderReflections();
 	CRenderer::RenderEverythingBarRoads();
 	RwRenderStateSet(rwRENDERSTATECULLMODE, (void*)rwCULLMODECULLNONE);
+#ifdef RTGI
+	RayTracedGI::WaterRenderBegin();
+#endif
 	CWaterLevel::RenderWater();
+#ifdef RTGI
+	RayTracedGI::WaterRenderEnd();
+#endif
 	CRenderer::RenderBoats();
 	CRenderer::RenderFadingInUnderwaterEntities();
 	RwRenderStateSet(rwRENDERSTATECULLMODE, (void*)rwCULLMODECULLNONE);
+#ifdef RTGI
+	RayTracedGI::WaterRenderBegin();
+#endif
 	CWaterLevel::RenderTransparentWater();
+#ifdef RTGI
+	RayTracedGI::WaterRenderEnd();
+#endif
 	CRenderer::RenderFadingInEntities();
 	RwRenderStateSet(rwRENDERSTATECULLMODE, (void*)rwCULLMODECULLNONE);
 	CWeather::RenderRainStreaks();

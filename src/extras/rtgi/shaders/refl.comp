@@ -100,8 +100,19 @@ void main()
 		normal = -normal;
 
 	// G-buffer normal.w: < 0 = vehicle base reflectivity (negated),
-	// >= 0 = per-surface wet multiplier (roads 1.0, walls 0.25, foliage absent)
+	// > 1.5 = sea surface, else per-surface wet multiplier (roads 1.0,
+	// walls 0.25, foliage absent)
 	vec3 viewDir = normalize(viewRay);
+	vec3 worldPos = pc.camPos.xyz + viewRay*depth;
+
+	// sea: procedural ripple so the mirror wobbles like swell
+	if(nr.w > 1.5){
+		float t = float(pc.frame & 0x3FFFu) * 0.03;
+		normal.x += 0.055*sin(worldPos.x*0.9 + t*1.7) + 0.04*sin(worldPos.y*1.9 + t*2.3);
+		normal.y += 0.055*sin(worldPos.y*0.8 + t*1.3) + 0.04*sin((worldPos.x + worldPos.y)*1.2 + t*1.9);
+		normal = normalize(normal);
+	}
+
 	float ndv = clamp(dot(-viewDir, normal), 0.0, 1.0);
 	float fresnel = pow(1.0 - ndv, 5.0);
 
@@ -109,11 +120,13 @@ void main()
 	if(nr.w < 0.0)
 		// clearcoat-like: near zero looking straight at the panel (the
 		// hood must stay clean paint), mirror toward grazing
-		refl = -nr.w * mix(0.08, 2.0, fresnel);
+		refl = clamp(-nr.w * mix(0.08, 2.0, fresnel), 0.0, 0.75);
+	else if(nr.w > 1.5)
+		// the sea is always reflective, mirror toward the horizon
+		refl = mix(0.07, 0.9, fresnel);
 	else
-		// water-like: faint sheen looking straight down, mirror at grazing
-		refl = pc.wetness * clamp(normal.z, 0.0, 1.0) * nr.w * mix(0.06, 0.85, fresnel);
-	refl = clamp(refl, 0.0, 0.75);
+		// wet roads: faint sheen looking straight down, mirror at grazing
+		refl = clamp(pc.wetness * clamp(normal.z, 0.0, 1.0) * nr.w * mix(0.06, 0.85, fresnel), 0.0, 0.75);
 
 	if(refl < 0.02){
 		imageStore(reflImage, ivec2(px), vec4(0.0));
@@ -122,7 +135,6 @@ void main()
 
 	uint state = px.x*7919u + px.y*104729u + pc.frame*15485863u;
 
-	vec3 worldPos = pc.camPos.xyz + viewRay*depth;
 	vec3 dir = reflect(viewDir, normal);
 	vec3 origin = worldPos + normal*0.05;
 

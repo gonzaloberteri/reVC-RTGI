@@ -29,6 +29,13 @@ bool VehicleRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header);
 bool PedRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header);
 bool PedSkinRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header);
 
+// sea reflections: wrap the forward water draws with the im3d override
+// that mixes the RT reflection buffer over the vanilla water.
+void WaterRenderBegin(void);
+void WaterRenderEnd(void);
+// true while GbufferRender re-renders the sea into the G-buffer
+extern bool gbWaterGbufPass;
+
 }
 
 #endif
