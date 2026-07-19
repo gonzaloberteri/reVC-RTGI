@@ -13,8 +13,10 @@ void PassesShutdown(void);
 // mode: 1 = normals, 2 = depth, 3 = instances (matches primary.comp)
 void PassesTracePrimary(VkCommandBuffer cmd, uint32_t mode, uint32_t frame);
 
-// ray traced AO from the G-buffer into the shared AO image
-void PassesTraceAO(VkCommandBuffer cmd, uint32_t frame, uint32_t numRays, float radius);
+// ray traced AO from the G-buffer. viaTemporal routes the noisy AO term
+// through the GI temporal pass for smoothing (requires PassesTraceGI to
+// run this frame); otherwise it writes the shared AO image directly.
+void PassesTraceAO(VkCommandBuffer cmd, uint32_t frame, uint32_t numRays, float radius, bool viaTemporal);
 
 // one-bounce diffuse GI + temporal accumulation into the shared GI image
 bool PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory);

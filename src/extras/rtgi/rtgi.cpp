@@ -488,7 +488,7 @@ RenderFrame(void)
 			vkCmdPipelineBarrier(gVk.cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 				0, 0, nullptr, 0, nullptr, 1, &aoToGeneral);
 			// gbuffer images were left in GENERAL by the semaphore import
-			PassesTraceAO(gVk.cmdBuf, frameCounter, (uint32_t)gnAORays, gfAORadius);
+			PassesTraceAO(gVk.cmdBuf, frameCounter, (uint32_t)gnAORays, gfAORadius, gbGIEnable);
 			if(timing) timestamp(gVk.cmdBuf, TS_AO);
 
 			// diffuse GI + temporal accumulation

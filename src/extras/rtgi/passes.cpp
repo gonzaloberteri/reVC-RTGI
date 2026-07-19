@@ -127,6 +127,8 @@ static GpuImage gGiRaw;
 static GpuImage gGiAccum[2];
 static GpuImage gDepthHist[2];
 static GpuImage gMoments[2];	// r = E[lum], g = E[lum^2], b = history length
+static GpuImage gAoRaw;		// 1spp AO + sun vis before temporal smoothing
+static GpuImage gAoAccum[2];
 static GpuImage gAtrousScratch;
 
 // game point lights snapshot for the GI pass
@@ -400,8 +402,8 @@ PassesInit(void)
 	// --- temporal pass ---------------------------------------------------
 
 	{
-	VkDescriptorSetLayoutBinding b[9] = {};
-	VkDescriptorType types[9] = {
+	VkDescriptorSetLayoutBinding b[13] = {};
+	VkDescriptorType types[13] = {
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// giRaw
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// prevAccum
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// prevDepth
@@ -411,15 +413,19 @@ PassesInit(void)
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// outPrevDepth
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// prevMoments
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// outMoments
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// aoRaw
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// prevAoAccum
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// outAoAccum
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// outAoShared (GL)
 	};
-	for(int i = 0; i < 9; i++){
+	for(int i = 0; i < 13; i++){
 		b[i].binding = i;
 		b[i].descriptorType = types[i];
 		b[i].descriptorCount = 1;
 		b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 	}
 	VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-	li.bindingCount = 9;
+	li.bindingCount = 13;
 	li.pBindings = b;
 	if(vkCreateDescriptorSetLayout(gVk.device, &li, nullptr, &gTemporalSetLayout) != VK_SUCCESS)
 		return false;
@@ -499,6 +505,9 @@ PassesInit(void)
 	   !ImageCreate(&gDepthHist[1], w, h, VK_FORMAT_R32_SFLOAT, giUsage) ||
 	   !ImageCreate(&gMoments[0], w, h, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage) ||
 	   !ImageCreate(&gMoments[1], w, h, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage) ||
+	   !ImageCreate(&gAoRaw, w, h, VK_FORMAT_R16G16_SFLOAT, giUsage) ||
+	   !ImageCreate(&gAoAccum[0], w, h, VK_FORMAT_R16_SFLOAT, giUsage) ||
+	   !ImageCreate(&gAoAccum[1], w, h, VK_FORMAT_R16_SFLOAT, giUsage) ||
 	   !ImageCreate(&gAtrousScratch, w, h, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage))
 		return false;
 
@@ -573,6 +582,9 @@ PassesShutdown(void)
 	ImageDestroy(&gDepthHist[1]);
 	ImageDestroy(&gMoments[0]);
 	ImageDestroy(&gMoments[1]);
+	ImageDestroy(&gAoRaw);
+	ImageDestroy(&gAoAccum[0]);
+	ImageDestroy(&gAoAccum[1]);
 	if(gGiPipeline) vkDestroyPipeline(gVk.device, gGiPipeline, nullptr);
 	if(gGiPipeLayout) vkDestroyPipelineLayout(gVk.device, gGiPipeLayout, nullptr);
 	if(gGiSetLayout) vkDestroyDescriptorSetLayout(gVk.device, gGiSetLayout, nullptr);
@@ -665,14 +677,16 @@ PassesTracePrimary(VkCommandBuffer cmd, uint32_t mode, uint32_t frame)
 }
 
 void
-PassesTraceAO(VkCommandBuffer cmd, uint32_t frame, uint32_t numRays, float radius)
+PassesTraceAO(VkCommandBuffer cmd, uint32_t frame, uint32_t numRays, float radius, bool viaTemporal)
 {
 	VkAccelerationStructureKHR tlas = TlasHandle();
 	VkWriteDescriptorSetAccelerationStructureKHR asWrite = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
 	asWrite.accelerationStructureCount = 1;
 	asWrite.pAccelerationStructures = &tlas;
 	VkDescriptorImageInfo aoImgInfo = {};
-	aoImgInfo.imageView = gInterop.aoOutput.view;
+	// with the GI temporal pass running, AO goes through it for smoothing;
+	// standalone AO still writes the shared image directly
+	aoImgInfo.imageView = viaTemporal ? gAoRaw.view : gInterop.aoOutput.view;
 	aoImgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 	VkDescriptorImageInfo normalInfo = {};
 	normalInfo.sampler = gInterop.sampler;
@@ -754,11 +768,12 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 
 	// first use: everything to GENERAL once
 	if(!gGiImagesInitialised){
-		VkImageMemoryBarrier barriers[8] = {};
-		VkImage images[8] = { gGiRaw.image, gGiAccum[0].image, gGiAccum[1].image,
+		VkImageMemoryBarrier barriers[11] = {};
+		VkImage images[11] = { gGiRaw.image, gGiAccum[0].image, gGiAccum[1].image,
 			gDepthHist[0].image, gDepthHist[1].image, gAtrousScratch.image,
-			gMoments[0].image, gMoments[1].image };
-		for(int i = 0; i < 8; i++){
+			gMoments[0].image, gMoments[1].image,
+			gAoRaw.image, gAoAccum[0].image, gAoAccum[1].image };
+		for(int i = 0; i < 11; i++){
 			barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 			barriers[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 			barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -919,12 +934,17 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 	VkDescriptorImageInfo outPrevDepthInfo = { VK_NULL_HANDLE, gDepthHist[cur].view, VK_IMAGE_LAYOUT_GENERAL };
 	VkDescriptorImageInfo prevMomentsInfo = { gInterop.sampler, gMoments[prev].view, VK_IMAGE_LAYOUT_GENERAL };
 	VkDescriptorImageInfo outMomentsInfo = { VK_NULL_HANDLE, gMoments[cur].view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo aoRawInfo = { gInterop.sampler, gAoRaw.view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo prevAoInfo = { gInterop.sampler, gAoAccum[prev].view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo outAoInfo = { VK_NULL_HANDLE, gAoAccum[cur].view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo outAoSharedInfo = { VK_NULL_HANDLE, gInterop.aoOutput.view, VK_IMAGE_LAYOUT_GENERAL };
 
-	VkWriteDescriptorSet writes[9] = {};
-	const VkDescriptorImageInfo *infos[9] = { &rawInfo, &prevAccumInfo, &prevDepthInfo,
+	VkWriteDescriptorSet writes[13] = {};
+	const VkDescriptorImageInfo *infos[13] = { &rawInfo, &prevAccumInfo, &prevDepthInfo,
 		&depthInfo, &outAccumInfo, &outSharedInfo, &outPrevDepthInfo,
-		&prevMomentsInfo, &outMomentsInfo };
-	VkDescriptorType types[9] = {
+		&prevMomentsInfo, &outMomentsInfo,
+		&aoRawInfo, &prevAoInfo, &outAoInfo, &outAoSharedInfo };
+	VkDescriptorType types[13] = {
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -933,9 +953,13 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 	};
-	for(int i = 0; i < 9; i++){
+	for(int i = 0; i < 13; i++){
 		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[i].dstSet = gTemporalDescSet;
 		writes[i].dstBinding = i;
@@ -943,7 +967,7 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 		writes[i].descriptorType = types[i];
 		writes[i].pImageInfo = infos[i];
 	}
-	vkUpdateDescriptorSets(gVk.device, 9, writes, 0, nullptr);
+	vkUpdateDescriptorSets(gVk.device, 13, writes, 0, nullptr);
 	}
 
 	TemporalPushConstants tpc = {};
