@@ -78,6 +78,59 @@ static int32 gnForceWeather = -1;	// config "weather=N"
 // what the debug menu did to the toggles in between
 static bool gFrameSubmitted;
 
+// GPU pass timing: timestamps written along the frame's command buffer,
+// read back after the frame fence, averaged into the telemetry line
+enum {
+	TS_BEGIN, TS_TLAS, TS_AO, TS_GI, TS_DENOISE, TS_REFL,
+	TS_COUNT
+};
+static VkQueryPool gTsPool;
+static double gTsAccumMs[TS_COUNT];	// per-stage sums (deltas)
+static uint32 gTsFrames;
+static bool gTsWrittenLastFrame;
+static float gTsPeriodMs;
+
+static void
+timestampsReadPrevious(void)
+{
+	if(!gTsWrittenLastFrame)
+		return;
+	gTsWrittenLastFrame = false;
+	uint64_t ts[TS_COUNT];
+	if(vkGetQueryPoolResults(gVk.device, gTsPool, 0, TS_COUNT, sizeof(ts), ts,
+	   sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+		return;
+	for(int i = 1; i < TS_COUNT; i++)
+		gTsAccumMs[i] += (double)(ts[i] - ts[i-1]) * gTsPeriodMs;
+	gTsFrames++;
+}
+
+static bool
+timestampsBegin(VkCommandBuffer cmd)
+{
+	if(gTsPool == VK_NULL_HANDLE){
+		VkPhysicalDeviceProperties props;
+		vkGetPhysicalDeviceProperties(gVk.physicalDevice, &props);
+		if(props.limits.timestampComputeAndGraphics == VK_FALSE)
+			return false;
+		gTsPeriodMs = props.limits.timestampPeriod * 1e-6f;
+		VkQueryPoolCreateInfo qi = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+		qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+		qi.queryCount = TS_COUNT;
+		if(vkCreateQueryPool(gVk.device, &qi, nullptr, &gTsPool) != VK_SUCCESS)
+			return false;
+	}
+	vkCmdResetQueryPool(cmd, gTsPool, 0, TS_COUNT);
+	return true;
+}
+
+static void
+timestamp(VkCommandBuffer cmd, int which)
+{
+	if(gTsPool)
+		vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, gTsPool, which);
+}
+
 // dev/testing: dump the backbuffer every N frames (0 = off; config
 // "shotframes=N"). OS screen capture can't see the fullscreen GL frontbuffer,
 // so automated runs read these instead.
@@ -325,6 +378,10 @@ Shutdown(void)
 		TlasShutdown();
 		BlasShutdown();
 	}
+	if(gTsPool){
+		vkDestroyQueryPool(gVk.device, gTsPool, nullptr);
+		gTsPool = VK_NULL_HANDLE;
+	}
 	blitDestroy();
 	InteropDestroy();
 	VkContextDestroy();
@@ -351,6 +408,7 @@ RenderFrame(void)
 	// don't re-record while the previous frame's VK work is in flight
 	vkWaitForFences(gVk.device, 1, &gVk.frameFence, VK_TRUE, UINT64_MAX);
 	vkResetFences(gVk.device, 1, &gVk.frameFence);
+	timestampsReadPrevious();
 
 	// GL: G-buffer prepass for this camera, handed to VK via semaphore
 	bool gbufDone = false;
@@ -368,12 +426,16 @@ RenderFrame(void)
 
 	bool wantTrace = gVk.hasRayTracing;
 	bool traced = false;
+	bool timing = false;
 	if(wantTrace){
 		BlasBeginFrame();
+		timing = timestampsBegin(gVk.cmdBuf);
+		if(timing) timestamp(gVk.cmdBuf, TS_BEGIN);
 		TexCacheEnsureDummy(gVk.cmdBuf);	// slot 0 backs unused array entries
 		TlasCollect(gVk.cmdBuf);	// walks game world, queues BLAS builds
 		traced = TlasBuild(gVk.cmdBuf);
 	}
+	if(timing) timestamp(gVk.cmdBuf, TS_TLAS);
 
 	if(traced){
 		// image to GENERAL for compute writes
@@ -405,6 +467,7 @@ RenderFrame(void)
 				0, 0, nullptr, 0, nullptr, 1, &aoToGeneral);
 			// gbuffer images were left in GENERAL by the semaphore import
 			PassesTraceAO(gVk.cmdBuf, frameCounter, (uint32_t)gnAORays, gfAORadius);
+			if(timing) timestamp(gVk.cmdBuf, TS_AO);
 
 			// diffuse GI + temporal accumulation
 			if(gbGIEnable){
@@ -414,8 +477,13 @@ RenderFrame(void)
 					0, 0, nullptr, 0, nullptr, 1, &giToGeneral);
 				PassesTraceGI(gVk.cmdBuf, frameCounter, gResetGIHistory);
 				gResetGIHistory = false;
+				if(timing) timestamp(gVk.cmdBuf, TS_GI);
 				if(gbDenoise)
 					PassesDenoiseGI(gVk.cmdBuf);
+				if(timing) timestamp(gVk.cmdBuf, TS_DENOISE);
+			}else{
+				if(timing) timestamp(gVk.cmdBuf, TS_GI);
+				if(timing) timestamp(gVk.cmdBuf, TS_DENOISE);
 			}
 
 			// reflections
@@ -426,6 +494,7 @@ RenderFrame(void)
 					0, 0, nullptr, 0, nullptr, 1, &reflToGeneral);
 				PassesTraceReflections(gVk.cmdBuf, frameCounter);
 			}
+			if(timing) timestamp(gVk.cmdBuf, TS_REFL);
 		}
 
 		VkImageMemoryBarrier afterTrace = toGeneral;
@@ -468,10 +537,23 @@ RenderFrame(void)
 
 	vkEndCommandBuffer(gVk.cmdBuf);
 
-	if(traced && (frameCounter % 300) == 0)
+	// only frames that wrote every stamp are readable next frame
+	gTsWrittenLastFrame = timing && traced && gbufDone;
+
+	if(traced && (frameCounter % 300) == 0){
 		RtgiLog("RTGI: %u TLAS instances, %d BLASes, %u GI lights (%u headlights), %u cached textures (paused=%d menu=%d fade=%d)\n",
 			TlasInstanceCount(), BlasCount(), GiLightCount(), GiHeadlightCount(), TexCacheCount(),
 			CTimer::GetIsPaused(), FrontEndMenuManager.m_bMenuActive, CDraw::FadeValue);
+		if(gTsFrames > 0){
+			RtgiLog("RTGI: GPU ms avg over %u frames: blas/tlas %.2f, ao %.2f, gi %.2f, denoise %.2f, refl %.2f\n",
+				gTsFrames,
+				gTsAccumMs[TS_TLAS]/gTsFrames, gTsAccumMs[TS_AO]/gTsFrames,
+				gTsAccumMs[TS_GI]/gTsFrames, gTsAccumMs[TS_DENOISE]/gTsFrames,
+				gTsAccumMs[TS_REFL]/gTsFrames);
+			memset(gTsAccumMs, 0, sizeof(gTsAccumMs));
+			gTsFrames = 0;
+		}
+	}
 
 	VkSemaphore waitSems[2];
 	VkPipelineStageFlags waitStages[2];
