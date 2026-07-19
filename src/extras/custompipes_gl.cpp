@@ -434,6 +434,12 @@ rimSkinRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 	using namespace rw;
 	using namespace rw::gl3;
 
+#ifdef RTGI
+	// ray traced composite: peds receive AO/GI/sun shadows
+	if(RayTracedGI::PedSkinRenderCB(atomic, header))
+		return;
+#endif
+
 	if(!RimlightEnable){
 		gl3::skinRenderCB(atomic, header);
 		return;
@@ -476,6 +482,12 @@ rimRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 {
 	using namespace rw;
 	using namespace rw::gl3;
+
+#ifdef RTGI
+	// ray traced composite: peds receive AO/GI/sun shadows
+	if(RayTracedGI::PedRenderCB(atomic, header))
+		return;
+#endif
 
 	if(!RimlightEnable){
 		gl3::defaultRenderCB(atomic, header);

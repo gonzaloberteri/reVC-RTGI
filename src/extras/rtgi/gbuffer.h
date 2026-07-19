@@ -25,6 +25,10 @@ bool WorldRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header);
 // env-map pass on materials that carried one.
 bool VehicleRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header);
 
+// ped composites (rigid and skinned); no reflections on skin/cloth.
+bool PedRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header);
+bool PedSkinRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header);
+
 }
 
 #endif

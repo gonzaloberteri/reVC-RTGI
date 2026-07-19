@@ -12,6 +12,7 @@
 #include <rwcore.h>
 #include <rpworld.h>
 #include <rpmatfx.h>
+#include <rpskin.h>
 #include "rtgi.h"
 #include "Renderer.h"
 #include "Entity.h"
@@ -24,8 +25,10 @@ namespace RayTracedGI {
 static GLuint gFbo;
 static GLuint gDepthRbo;
 static rw::gl3::Shader *gGbufShader;
+static rw::gl3::Shader *gGbufSkinShader;
 static rw::gl3::Shader *gWorldShader;
 static rw::gl3::Shader *gVehicleShader;
+static rw::gl3::Shader *gSkinShader;
 static int gWidth, gHeight;
 
 static int32 u_aoTex;
@@ -66,6 +69,15 @@ GbufferInit(int width, int height)
 		return false;
 	}
 	{
+#include "shaders/obj/rtgiGbufSkin_vert.inc"
+#include "shaders/obj/rtgiGbuf_frag.inc"
+	const char *vs[] = { shaderDecl, header_vert_src, rtgiGbufSkin_vert_src, nil };
+	const char *fs[] = { shaderDecl, rtgiGbuf_frag_src, nil };
+	gGbufSkinShader = Shader::create(vs, fs);
+	if(gGbufSkinShader == nil)
+		return false;
+	}
+	{
 #include "shaders/obj/rtgiWorld_vert.inc"
 #include "shaders/obj/rtgiWorld_frag.inc"
 	const char *vs[] = { shaderDecl, header_vert_src, rtgiWorld_vert_src, nil };
@@ -81,6 +93,15 @@ GbufferInit(int width, int height)
 	const char *fs[] = { shaderDecl, header_frag_src, rtgiVehicle_frag_src, nil };
 	gVehicleShader = Shader::create(vs, fs);
 	if(gVehicleShader == nil)
+		return false;
+	}
+	{
+#include "shaders/obj/rtgiSkin_vert.inc"
+#include "shaders/obj/rtgiVehicle_frag.inc"
+	const char *vs[] = { shaderDecl, header_vert_src, rtgiSkin_vert_src, nil };
+	const char *fs[] = { shaderDecl, header_frag_src, rtgiVehicle_frag_src, nil };
+	gSkinShader = Shader::create(vs, fs);
+	if(gSkinShader == nil)
 		return false;
 	}
 
@@ -109,14 +130,16 @@ void
 GbufferShutdown(void)
 {
 	if(gGbufShader){ gGbufShader->destroy(); gGbufShader = nil; }
+	if(gGbufSkinShader){ gGbufSkinShader->destroy(); gGbufSkinShader = nil; }
 	if(gWorldShader){ gWorldShader->destroy(); gWorldShader = nil; }
 	if(gVehicleShader){ gVehicleShader->destroy(); gVehicleShader = nil; }
+	if(gSkinShader){ gSkinShader->destroy(); gSkinShader = nil; }
 	if(gFbo){ glDeleteFramebuffers(1, &gFbo); gFbo = 0; }
 	if(gDepthRbo){ glDeleteRenderbuffers(1, &gDepthRbo); gDepthRbo = 0; }
 }
 
 static void
-gbufDrawAtomic(rw::Atomic *atomic)
+gbufDrawAtomic(rw::Atomic *atomic, float reflW)
 {
 	using namespace rw::gl3;
 
@@ -130,6 +153,16 @@ gbufDrawAtomic(rw::Atomic *atomic)
 	InstanceDataHeader *header = (InstanceDataHeader*)geo->instData;
 	if(header == nil || header->platform != rw::PLATFORM_GL3)
 		return;
+
+	// skinned atomics (peds) go through the bone-matrix vertex path
+	if(rw::Skin::get(geo)){
+		gGbufSkinShader->use();
+		uploadSkinMatrices(atomic);
+	}else
+		gGbufShader->use();
+
+	float refl[4] = { reflW, 0.0f, 0.0f, 0.0f };
+	glUniform4fv(U(u_gbParams), 1, refl);
 
 	setWorldMatrix(atomic->getFrame()->getLTM());
 	setupVertexInput(header);
@@ -170,35 +203,33 @@ GbufferRender(void)
 	glDisable(GL_BLEND);
 	glDisable(GL_CULL_FACE);
 
-	gGbufShader->use();
-
-	// world + vehicles from the renderer's visible set; peds are skinned
-	// (different vertex layout) and excluded until M9
+	// world + vehicles + peds from the renderer's visible set
 	for(int32 i = 0; i < CRenderer::GetNoOfVisibleEntities(); i++){
 		CEntity *e = CRenderer::GetVisibleEntity(i);
-		if(e->m_rwObject == nil || e->IsPed())
+		if(e->m_rwObject == nil)
 			continue;
 
 		// G-buffer normal.w: < 0 = vehicle base reflectivity (negated),
 		// >= 0 = wet-weather reflectivity multiplier. Roads use the game's
-		// own per-model wet-reflection flag; other surfaces get a light sheen.
+		// own per-model wet-reflection flag; other surfaces get a light
+		// sheen; peds never reflect.
 		float reflW;
 		if(e->IsVehicle())
 			reflW = -0.35f;
+		else if(e->IsPed())
+			reflW = 0.0f;
 		else if(e->IsBuilding() &&
 		   ((CSimpleModelInfo*)CModelInfo::GetModelInfo(e->GetModelIndex()))->m_wetRoadReflection)
 			reflW = 1.0f;
 		else
 			reflW = 0.25f;
-		float refl[4] = { reflW, 0.0f, 0.0f, 0.0f };
-		glUniform4fv(U(u_gbParams), 1, refl);
 
 		if(RwObjectGetType(e->m_rwObject) == rpATOMIC)
-			gbufDrawAtomic((rw::Atomic*)e->m_rwObject);
+			gbufDrawAtomic((rw::Atomic*)e->m_rwObject, reflW);
 		else{
 			rw::Clump *clump = (rw::Clump*)e->m_rwObject;
 			FORLIST(lnk, clump->atomics)
-				gbufDrawAtomic(rw::Atomic::fromClump(lnk));
+				gbufDrawAtomic(rw::Atomic::fromClump(lnk), reflW);
 		}
 	}
 
@@ -307,6 +338,73 @@ VehicleRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 		inst++;
 	}
 	teardownVertexInput(header);
+	return true;
+}
+
+// shared mesh loop for the ped composites (no reflections on skin/cloth)
+static void
+pedDrawMeshes(rw::uint32 flags, rw::gl3::InstanceDataHeader *header)
+{
+	using namespace rw;
+	using namespace rw::gl3;
+
+	float vehParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+	glUniform4fv(U(u_rtgiVehParams), 1, vehParams);
+
+	InstanceData *inst = header->inst;
+	int32 n = header->numMeshes;
+	while(n--){
+		Material *m = inst->material;
+
+		setMaterial(flags, m->color, m->surfaceProps);
+		setTexture(0, m->texture);
+
+		rw::SetRenderState(VERTEXALPHA, inst->vertexAlpha || m->color.alpha != 0xFF);
+
+		drawInst(header, inst);
+		inst++;
+	}
+	teardownVertexInput(header);
+}
+
+bool
+PedRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
+{
+	using namespace rw;
+	using namespace rw::gl3;
+
+	if(!gbRayTracedGI || !gbAOEnable || gVehicleShader == nil)
+		return false;
+
+	setWorldMatrix(atomic->getFrame()->getLTM());
+	lightingCB(atomic);
+	setupVertexInput(header);
+
+	gVehicleShader->use();
+	uploadCompositeUniforms();
+
+	pedDrawMeshes(atomic->geometry->flags, header);
+	return true;
+}
+
+bool
+PedSkinRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
+{
+	using namespace rw;
+	using namespace rw::gl3;
+
+	if(!gbRayTracedGI || !gbAOEnable || gSkinShader == nil)
+		return false;
+
+	setWorldMatrix(atomic->getFrame()->getLTM());
+	lightingCB(atomic);
+	setupVertexInput(header);
+
+	gSkinShader->use();
+	uploadCompositeUniforms();
+	uploadSkinMatrices(atomic);
+
+	pedDrawMeshes(atomic->geometry->flags, header);
 	return true;
 }
 

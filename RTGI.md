@@ -26,7 +26,10 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
   encode base paint reflectivity (negated), roads use the game's own
   per-model wet-reflection flag, other surfaces get a light sheen
 - **Skinned peds** — CPU-posed every frame into per-ped BLASes so they occlude
-  and cast like everything else
+  and cast like everything else; peds are also in the G-buffer (skinned
+  vertex path) and composite AO/GI/sun shadows in their forward pass
+- **Vehicles** — composite AO/GI and receive ray traced sun shadows; matFX
+  env-map materials sample the RT reflection buffer instead of the env hack
 - **Foliage** — alpha-tested materials (palms, shrubs) build as non-opaque
   BLAS ranges; every RT pass traverses them stochastically (45% coverage) so
   canopies cast soft partial shadows/AO instead of solid-quad blobs, and the
