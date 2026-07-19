@@ -38,7 +38,9 @@ struct GeomRecord
 
 // --- hit-point texture cache: downsampled copies of game textures in a
 // sampled-image array so hit shaders fetch real albedo -----------------------
-enum { TEXCACHE_MAX = 1024 };
+// 975 slots were live after a 10-minute streaming soak at 1024; 2048 gives
+// long sessions headroom (~64 MB worst case of small RGBA8 copies)
+enum { TEXCACHE_MAX = 2048 };
 
 // records the slot-0 dummy upload on first use; call once per frame before
 // the trace passes are recorded
