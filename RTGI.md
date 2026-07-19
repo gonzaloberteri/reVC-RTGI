@@ -83,9 +83,10 @@ AO strength/radius/rays, GI blend/exposure, debug views (RT normals/depth/
 instances, AO, G-buffer, sun visibility, GI, reflections).
 
 `rtgi_config.txt` next to the exe (for automated testing): `view=N`,
-`enabled/ao/gi/denoise/reflections/sunshadows=0|1`, `aostrength/aoradius/
-giblend/giexposure=F`, `aorays=N`, `shotframes=N` (periodic BMP dumps),
-`tp=x,y,z` (teleport after load), `hour=N`, `weather=N`,
+`enabled/ao/gi/gi2/denoise/reflections/sunshadows=0|1`, `aostrength/
+aoradius/giblend/giexposure/emissive=F`, `aorays=N`, `shotframes=N`
+(periodic BMP dumps), `tp=x,y,z` (teleport after load), `area=N`
+(interior for the teleport, eAreaName in Game.h), `hour=N`, `weather=N`,
 plus `rtgi_autoload.txt` containing a save slot number (1-8) to auto-load
 and `rtgi_window.txt` ("W H") forcing a small window for background runs.
 The harness (teleport/clock/weather/screenshots) also works with
@@ -107,8 +108,13 @@ Observations to revisit:
 - Rain feels darker than vanilla art direction (GI pulls ambient toward the
   dark storm sky); consider scaling giblend down in rain, or brightening the
   sky term under overcast weathers.
-- Interiors are unreachable by the test harness: config `tp=` forces
-  AREA_MAIN_MAP. Add an `area=` config key to enable interior baselines.
+- `area=` config key exists but interior floor coordinates per area still
+  need cataloguing (hotel = save start; malibu attempt at 489.6,-84.5 was
+  not the club floor).
 - Vehicle windshields are non-opaque in the BLAS, so reflections that hit
-  glass dither at 45% coverage; real albedo/glass handling (backlog #4)
-  would clean this up.
+  glass dither at 45% coverage.
+- Denoiser: à-trous still shimmers on thin geometry — SVGF variance
+  guiding is the next quality step (backlog #5 second half).
+- GPU timings (native 1440p, 3090): blas/tlas 0.65, ao 1.9, gi 2.6,
+  denoise 2.2, refl 0.2 ms. Background-window runs report inflated
+  numbers (GPU power state) — compare like with like.
