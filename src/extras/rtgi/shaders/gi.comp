@@ -46,7 +46,7 @@ layout(push_constant) uniform PC {
 	vec4 sunDir;	// xyz to sun, w > 0 when up
 	vec4 sunColor;	// rgb, w = emissive boost
 	vec4 skyTop;	// rgb, w = second-bounce RR probability (0 = single bounce)
-	vec4 skyBottom;	// rgb
+	vec4 skyBottom;	// rgb, w = checkerboard enable
 	uvec2 size;
 	uint frame;
 	uint numLights;
@@ -108,6 +108,13 @@ void main()
 {
 	uvec2 px = gl_GlobalInvocationID.xy;
 	if(px.x >= pc.size.x || px.y >= pc.size.y)
+		return;
+
+	// checkerboard: trace half the 8x8 tiles per frame (whole workgroups
+	// skip uniformly, so the SIMD actually saves); the temporal pass keeps
+	// the other half's history untouched
+	if(pc.skyBottom.w > 0.5 &&
+	   ((gl_WorkGroupID.x + gl_WorkGroupID.y + pc.frame) & 1u) == 1u)
 		return;
 
 	vec2 uv = (vec2(px) + 0.5) / vec2(pc.size);

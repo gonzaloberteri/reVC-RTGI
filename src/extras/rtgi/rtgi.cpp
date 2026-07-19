@@ -65,6 +65,7 @@ bool gbReflections = true;
 float gfEmissiveBoost = 1.0f;
 bool gbGI2 = true;
 bool gbPhotoMode;
+bool gbCheckerGI;
 
 static bool initialised;
 static uint32 frameCounter;
@@ -336,6 +337,7 @@ readConfigFile(void)
 		else if(sscanf(line, "emissive=%f", &fval) == 1) gfEmissiveBoost = fval;
 		else if(sscanf(line, "gi2=%d", &ival) == 1) gbGI2 = ival != 0;
 		else if(sscanf(line, "photo=%d", &ival) == 1) gbPhotoMode = ival != 0;
+		else if(sscanf(line, "checker=%d", &ival) == 1) gbCheckerGI = ival != 0;
 		else if(sscanf(line, "shotframes=%d", &ival) == 1) gnShotFrames = ival;
 		else if(sscanf(line, "tp=%f,%f,%f,%f", &gTeleport[0], &gTeleport[1], &gTeleport[2], &gTeleport[3]) == 4){
 			gWantTeleport = true;
@@ -694,6 +696,7 @@ AddDebugMenuEntries(void)
 	DebugMenuAddVar("RTGI", "Emissive boost", &gfEmissiveBoost, nil, 0.25f, 0.0f, 8.0f);
 	DebugMenuAddVarBool8("RTGI", "GI second bounce", (int8_t*)&gbGI2, nil);
 	DebugMenuAddVarBool8("RTGI", "Photo mode (accumulate)", (int8_t*)&gbPhotoMode, nil);
+	DebugMenuAddVarBool8("RTGI", "GI checkerboard (perf)", (int8_t*)&gbCheckerGI, nil);
 	DebugMenuAddVar("RTGI", "AO strength", &gfAOStrength, nil, 0.05f, 0.0f, 1.0f);
 	DebugMenuAddVar("RTGI", "AO radius", &gfAORadius, nil, 0.5f, 0.5f, 10.0f);
 	DebugMenuAddVar("RTGI", "AO rays", &gnAORays, nil, 1, 1, 8, nil);

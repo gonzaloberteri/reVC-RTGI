@@ -28,7 +28,8 @@ layout(push_constant) uniform PC {
 	uint frame;
 	uint reset;	// 1 = drop history (scene load, camera cut)
 	uint photo;	// 1 = progressive average (still camera), no blend floor
-	uint pad1, pad2, pad3;
+	uint checker;	// 1 = GI traced only alternating pixels this frame
+	uint pad2, pad3;
 } pc;
 
 void main()
@@ -66,12 +67,21 @@ void main()
 				if(pd > 0.0 && abs(pd - pz) / pz < 0.05){
 					vec3 hist = texture(prevAccum, prevUv).rgb;
 					vec3 prevM = texture(prevMoments, prevUv).rgb;
+					// checkerboard: pixels in untraced 8x8 tiles carry
+					// their history forward unchanged (must mirror the
+					// workgroup predicate in gi.comp)
+					bool traced = !(pc.checker != 0u &&
+						((px.x/8u + px.y/8u + pc.frame) & 1u) == 1u);
 					float nCap = pc.photo != 0u ? 4096.0 : 64.0;
-					float n = min(prevM.b + 1.0, nCap);
+					float n = min(prevM.b + (traced ? 1.0 : 0.0), nCap);
 					// photo mode converges to the true average; gameplay
 					// keeps a responsive blend floor
 					float alphaC = pc.photo != 0u ? 1.0/n : max(1.0/n, 0.08);
 					float alphaM = pc.photo != 0u ? 1.0/n : max(1.0/n, 0.2);
+					if(!traced){
+						alphaC = 0.0;
+						alphaM = 0.0;
+					}
 					result = mix(hist, cur, alphaC);
 					moments.r = mix(prevM.r, lum, alphaM);
 					moments.g = mix(prevM.g, lum*lum, alphaM);

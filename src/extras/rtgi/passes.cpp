@@ -97,7 +97,8 @@ struct TemporalPushConstants
 	uint32_t frame;
 	uint32_t reset;
 	uint32_t photo;
-	uint32_t pad1, pad2, pad3;
+	uint32_t checker;
+	uint32_t pad2, pad3;
 };
 
 static VkDescriptorSetLayout gGiSetLayout;
@@ -888,6 +889,8 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 	gpc.skyBottom[0] = CTimeCycle::GetSkyBottomRed()/255.0f;
 	gpc.skyBottom[1] = CTimeCycle::GetSkyBottomGreen()/255.0f;
 	gpc.skyBottom[2] = CTimeCycle::GetSkyBottomBlue()/255.0f;
+	// photo mode wants every pixel every frame
+	gpc.skyBottom[3] = (gbCheckerGI && !gbPhotoMode) ? 1.0f : 0.0f;
 	gpc.size[0] = w; gpc.size[1] = h;
 	gpc.frame = frame;
 	gpc.pad0 = numLights;
@@ -962,6 +965,7 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 	tpc.frame = frame;
 	tpc.reset = resetHistory ? 1 : 0;
 	tpc.photo = gbPhotoMode ? 1 : 0;
+	tpc.checker = (gbCheckerGI && !gbPhotoMode) ? 1 : 0;
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gTemporalPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gTemporalPipeLayout, 0, 1, &gTemporalDescSet, 0, nullptr);
