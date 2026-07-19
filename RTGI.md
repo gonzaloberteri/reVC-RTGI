@@ -14,9 +14,11 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
 
 - **Ambient occlusion** — cosine-hemisphere rays modulate the world's ambient
   lighting term per pixel
-- **Diffuse GI (1 bounce)** — sky light and sun bounce traced per pixel with
-  temporal accumulation and an edge-aware à-trous denoiser; replaces part of
-  the flat timecycle ambient (blend knob preserves art direction)
+- **Diffuse GI (2 bounces)** — sky light and sun bounce traced per pixel
+  (second bounce via 50% Russian roulette), temporal accumulation with
+  luminance-moment history, and a variance-guided edge-aware à-trous
+  denoiser (SVGF-style); replaces part of the flat timecycle ambient
+  (blend knob preserves art direction)
 - **Sun/moon shadows** — vehicles and peds cast accurate ray traced shadows
   (replaces their blob shadows); world sun light stays baked, as shipped
 - **Point lights** — streetlights/headlights feed the GI bounce (NEE)
@@ -113,8 +115,8 @@ Observations to revisit:
   not the club floor).
 - Vehicle windshields are non-opaque in the BLAS, so reflections that hit
   glass dither at 45% coverage.
-- Denoiser: à-trous still shimmers on thin geometry — SVGF variance
-  guiding is the next quality step (backlog #5 second half).
+- Denoiser is now variance-guided; if thin-geometry shimmer persists in
+  motion, next steps are variance spatial filtering and a history clamp.
 - GPU timings (native 1440p, 3090): blas/tlas 0.65, ao 1.9, gi 2.6,
   denoise 2.2, refl 0.2 ms. Background-window runs report inflated
   numbers (GPU power state) — compare like with like.
