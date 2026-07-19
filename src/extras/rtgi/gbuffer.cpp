@@ -11,6 +11,7 @@
 #include "common.h"
 #include <rwcore.h>
 #include <rpworld.h>
+#include <rpmatfx.h>
 #include "rtgi.h"
 #include "Renderer.h"
 #include "Entity.h"
@@ -24,6 +25,7 @@ static GLuint gFbo;
 static GLuint gDepthRbo;
 static rw::gl3::Shader *gGbufShader;
 static rw::gl3::Shader *gWorldShader;
+static rw::gl3::Shader *gVehicleShader;
 static int gWidth, gHeight;
 
 static int32 u_aoTex;
@@ -33,6 +35,7 @@ static int32 u_rtgiGIParams;
 static int32 u_gbParams;
 static int32 u_reflTex;
 static int32 u_rtgiReflParams;
+static int32 u_rtgiVehParams;
 
 #define U(i) (rw::gl3::currentShader->uniformLocations[i])
 
@@ -51,6 +54,7 @@ GbufferInit(int width, int height)
 	u_gbParams = registerUniform("u_gbParams");
 	u_reflTex = registerUniform("u_reflTex");
 	u_rtgiReflParams = registerUniform("u_rtgiReflParams");
+	u_rtgiVehParams = registerUniform("u_rtgiVehParams");
 
 	{
 #include "shaders/obj/rtgiGbuf_vert.inc"
@@ -68,6 +72,15 @@ GbufferInit(int width, int height)
 	const char *fs[] = { shaderDecl, header_frag_src, rtgiWorld_frag_src, nil };
 	gWorldShader = Shader::create(vs, fs);
 	if(gWorldShader == nil)
+		return false;
+	}
+	{
+#include "shaders/obj/rtgiWorld_vert.inc"
+#include "shaders/obj/rtgiVehicle_frag.inc"
+	const char *vs[] = { shaderDecl, header_vert_src, rtgiWorld_vert_src, nil };
+	const char *fs[] = { shaderDecl, header_frag_src, rtgiVehicle_frag_src, nil };
+	gVehicleShader = Shader::create(vs, fs);
+	if(gVehicleShader == nil)
 		return false;
 	}
 
@@ -97,6 +110,7 @@ GbufferShutdown(void)
 {
 	if(gGbufShader){ gGbufShader->destroy(); gGbufShader = nil; }
 	if(gWorldShader){ gWorldShader->destroy(); gWorldShader = nil; }
+	if(gVehicleShader){ gVehicleShader->destroy(); gVehicleShader = nil; }
 	if(gFbo){ glDeleteFramebuffers(1, &gFbo); gFbo = 0; }
 	if(gDepthRbo){ glDeleteRenderbuffers(1, &gDepthRbo); gDepthRbo = 0; }
 }
@@ -192,20 +206,12 @@ GbufferRender(void)
 	glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
 }
 
-bool
-WorldRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
+// bind the RT result textures + shared composite uniforms for whichever
+// composite shader is current
+static void
+uploadCompositeUniforms(void)
 {
-	using namespace rw;
 	using namespace rw::gl3;
-
-	if(!gbRayTracedGI || !gbAOEnable || gWorldShader == nil)
-		return false;
-
-	setWorldMatrix(atomic->getFrame()->getLTM());
-	lightingCB(atomic);
-	setupVertexInput(header);
-
-	gWorldShader->use();
 
 	glActiveTexture(GL_TEXTURE3);
 	glBindTexture(GL_TEXTURE_2D, gInterop.aoOutput.glTexture);
@@ -224,6 +230,23 @@ WorldRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 	glUniform4fv(U(u_rtgiParams), 1, params);
 	float giParams[4] = { gbGIEnable ? gfGIBlend : 0.0f, gfGIExposure, 0.0f, 0.0f };
 	glUniform4fv(U(u_rtgiGIParams), 1, giParams);
+}
+
+bool
+WorldRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
+{
+	using namespace rw;
+	using namespace rw::gl3;
+
+	if(!gbRayTracedGI || !gbAOEnable || gWorldShader == nil)
+		return false;
+
+	setWorldMatrix(atomic->getFrame()->getLTM());
+	lightingCB(atomic);
+	setupVertexInput(header);
+
+	gWorldShader->use();
+	uploadCompositeUniforms();
 
 	InstanceData *inst = header->inst;
 	int32 n = header->numMeshes;
@@ -235,6 +258,50 @@ WorldRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 		setTexture(0, m->texture);
 
 		rw::SetRenderState(VERTEXALPHA, inst->vertexAlpha || m->color.alpha != 0xFF);
+
+		drawInst(header, inst);
+		inst++;
+	}
+	teardownVertexInput(header);
+	return true;
+}
+
+bool
+VehicleRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
+{
+	using namespace rw;
+	using namespace rw::gl3;
+
+	if(!gbRayTracedGI || !gbAOEnable || gVehicleShader == nil)
+		return false;
+
+	uint32 flags = atomic->geometry->flags;
+	setWorldMatrix(atomic->getFrame()->getLTM());
+	lightingCB(atomic);
+	setupVertexInput(header);
+
+	gVehicleShader->use();
+	uploadCompositeUniforms();
+
+	InstanceData *inst = header->inst;
+	int32 n = header->numMeshes;
+	while(n--){
+		Material *m = inst->material;
+
+		setMaterial(flags, m->color, m->surfaceProps);
+		setTexture(0, m->texture);
+
+		rw::SetRenderState(VERTEXALPHA, inst->vertexAlpha || m->color.alpha != 0xFF);
+
+		// materials that carried a matFX env map (paint, chrome) get the
+		// ray traced reflection instead; everything else stays diffuse
+		float envScale = 0.0f;
+		MatFX *matfx = MatFX::get(m);
+		if(matfx && matfx->type == MatFX::ENVMAP &&
+		   matfx->fx[0].env.tex && matfx->fx[0].env.coefficient > 0.0f)
+			envScale = 1.0f;
+		float vehParams[4] = { envScale, 0.0f, 0.0f, 0.0f };
+		glUniform4fv(U(u_rtgiVehParams), 1, vehParams);
 
 		drawInst(header, inst);
 		inst++;

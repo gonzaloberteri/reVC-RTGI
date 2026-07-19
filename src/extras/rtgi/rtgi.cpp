@@ -103,6 +103,9 @@ devHarnessTick(void)
 		gResetGIHistory = true;
 	}
 	if(gnForceHour >= 0 && tick >= 150 && CClock::GetHours() != gnForceHour){
+		if(tick == 150)
+			RtgiLog("RTGI: forcing clock to %d:00 (was %d:%02d)\n",
+				gnForceHour, CClock::GetHours(), CClock::GetMinutes());
 		CClock::GetHoursRef() = gnForceHour;
 		CClock::GetMinutesRef() = 0;
 	}

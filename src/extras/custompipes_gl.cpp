@@ -82,6 +82,12 @@ vehicleRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 	using namespace rw;
 	using namespace rw::gl3;
 
+#ifdef RTGI
+	// ray traced composite replaces both the matFX and neo vehicle paths
+	if(RayTracedGI::VehicleRenderCB(atomic, header))
+		return;
+#endif
+
 	// TODO: make this less of a kludge
 	if(VehiclePipeSwitch == VEHICLEPIPE_MATFX){
 		matFXGlobals.pipelines[rw::platform]->render(atomic);

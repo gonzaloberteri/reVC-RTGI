@@ -21,6 +21,10 @@ void GbufferRender(void);
 // ambient term. Returns false when RTGI is off (caller runs its normal path).
 bool WorldRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header);
 
+// same composite for vehicle atomics; RT reflections replace the matFX
+// env-map pass on materials that carried one.
+bool VehicleRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header);
+
 }
 
 #endif

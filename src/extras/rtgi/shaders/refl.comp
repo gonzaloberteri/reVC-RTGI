@@ -102,7 +102,9 @@ void main()
 
 	float refl;
 	if(nr.w < 0.0)
-		refl = -nr.w * (0.5 + 1.5*fresnel);	// vehicle paint
+		// clearcoat-like: near zero looking straight at the panel (the
+		// hood must stay clean paint), mirror toward grazing
+		refl = -nr.w * mix(0.08, 2.0, fresnel);
 	else
 		// water-like: faint sheen looking straight down, mirror at grazing
 		refl = pc.wetness * clamp(normal.z, 0.0, 1.0) * nr.w * mix(0.06, 0.85, fresnel);
