@@ -81,10 +81,45 @@ static bool gFrameSubmitted;
 // so automated runs read these instead.
 static int32 gnShotFrames;
 
+// dev-harness state changes (teleport, clock/weather pinning) tick on their
+// own counter so vanilla (enabled=0) comparison runs land in the same scene
+static void
+devHarnessTick(void)
+{
+	static uint32 tick;
+	tick++;
+
+	if(gWantTeleport && tick == 150){
+		CPlayerPed *player = FindPlayerPed();
+		if(player){
+			// leave whatever interior the save was in
+			CGame::currArea = AREA_MAIN_MAP;
+			player->m_area = AREA_MAIN_MAP;
+			player->Teleport(CVector(gTeleport[0], gTeleport[1], gTeleport[2]));
+			RtgiLog("RTGI: teleported player to %.0f %.0f %.0f\n",
+				gTeleport[0], gTeleport[1], gTeleport[2]);
+		}
+		gWantTeleport = false;
+		gResetGIHistory = true;
+	}
+	if(gnForceHour >= 0 && tick >= 150 && CClock::GetHours() != gnForceHour){
+		CClock::GetHoursRef() = gnForceHour;
+		CClock::GetMinutesRef() = 0;
+	}
+	if(gnForceWeather >= 0 && tick == 160){
+		CWeather::ForceWeatherNow((int16)gnForceWeather);
+		RtgiLog("RTGI: forced weather %d\n", gnForceWeather);
+	}
+}
+
 static void
 screenshotDump(void)
 {
-	if(gnShotFrames <= 0 || (frameCounter % gnShotFrames) != 0 || frameCounter == 0)
+	// own counter, not frameCounter: that one only advances when RT frames
+	// are submitted, and vanilla (enabled=0) comparison runs must dump too
+	static uint32 dumpCounter;
+	dumpCounter++;
+	if(gnShotFrames <= 0 || (dumpCounter % gnShotFrames) != 0)
 		return;
 
 	GLint vp[4];
@@ -297,29 +332,6 @@ RenderFrame(void)
 	if(!initialised || !gbRayTracedGI)
 		return;
 
-	// dev teleport once gameplay is up and the world has streamed in
-	if(gWantTeleport && frameCounter == 150){
-		CPlayerPed *player = FindPlayerPed();
-		if(player){
-			// leave whatever interior the save was in
-			CGame::currArea = AREA_MAIN_MAP;
-			player->m_area = AREA_MAIN_MAP;
-			player->Teleport(CVector(gTeleport[0], gTeleport[1], gTeleport[2]));
-			RtgiLog("RTGI: teleported player to %.0f %.0f %.0f\n",
-				gTeleport[0], gTeleport[1], gTeleport[2]);
-		}
-		gWantTeleport = false;
-		gResetGIHistory = true;
-	}
-	if(gnForceHour >= 0 && frameCounter >= 150 && CClock::GetHours() != gnForceHour){
-		CClock::GetHoursRef() = gnForceHour;
-		CClock::GetMinutesRef() = 0;
-	}
-	if(gnForceWeather >= 0 && frameCounter == 160){
-		CWeather::ForceWeatherNow((int16)gnForceWeather);
-		RtgiLog("RTGI: forced weather %d\n", gnForceWeather);
-	}
-
 	// drop GI history on interior/level changes (bulk geometry swaps)
 	{
 		static int prevArea = -1;
@@ -490,11 +502,15 @@ RenderFrame(void)
 void
 DebugRender(void)
 {
+	devHarnessTick();
+
 	// keyed off gFrameSubmitted, not the toggles: the debug menu can flip
 	// them between RenderFrame and here, and the semaphore pair must stay
 	// balanced or the next submit deadlocks
-	if(!initialised || !gFrameSubmitted)
+	if(!initialised || !gFrameSubmitted){
+		screenshotDump();	// still dump: vanilla comparison runs need shots
 		return;
+	}
 
 	if(gnDebugView != DEBUGVIEW_OFF){
 		GLint prevProgram, prevVAO, prevActiveTex, prevTex0;

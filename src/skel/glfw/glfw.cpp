@@ -770,6 +770,21 @@ psSelectDevice()
 			FrontEndMenuManager.m_nPrefsWindowed = 0;
 		}
 
+#ifdef RTGI
+		// dev/testing: rtgi_window.txt ("W H") forces a small window so
+		// automated background runs don't take over the desktop
+		if(FILE *rtgiWnd = fopen("rtgi_window.txt", "r")){
+			int w = 0, h = 0;
+			if(fscanf(rtgiWnd, "%d %d", &w, &h) == 2 && w >= 320 && h >= 240){
+				FrontEndMenuManager.m_nPrefsWidth = w;
+				FrontEndMenuManager.m_nPrefsHeight = h;
+				FrontEndMenuManager.m_nPrefsDepth = 32;
+				FrontEndMenuManager.m_nPrefsWindowed = 1;
+			}
+			fclose(rtgiWnd);
+		}
+#endif
+
 		// Find the videomode that best fits what we got from the settings file
 		RwInt32 bestFsMode = -1;
 		RwInt32 bestWidth = -1;
