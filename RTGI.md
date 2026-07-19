@@ -45,6 +45,11 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
   BLAS ranges; every RT pass traverses them stochastically (45% coverage) so
   canopies cast soft partial shadows/AO instead of solid-quad blobs, and the
   G-buffer excludes them from the wet-sheen treatment
+- **Sea reflections** — the water surface is re-rendered into the G-buffer
+  (via a librw im3d shader-override hook, patch in docs/librw-rtgi.patch)
+  and the reflection pass mirrors the actual scene off it with a
+  procedural swell ripple; the forward water pass mixes the result over
+  the vanilla look by fresnel strength
 
 ## Architecture
 
