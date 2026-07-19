@@ -52,9 +52,14 @@ void main()
 	// RW camera space: right vector points screen-left, hence the negation
 	vec3 dir = normalize(pc.camFwd.xyz - pc.camRight.xyz*(u*pc.camRight.w) + pc.camUp.xyz*(v*pc.camUp.w));
 
+	uint state = px.x*7919u + px.y*104729u + pc.frame*15485863u;
 	rayQueryEXT rq;
-	rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, 0xFF, pc.camPos.xyz, 0.1, dir, 3000.0);
-	while(rayQueryProceedEXT(rq)) { }
+	rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, 0xFF, pc.camPos.xyz, 0.1, dir, 3000.0);
+	while(rayQueryProceedEXT(rq)){
+		if(rayQueryGetIntersectionTypeEXT(rq, false) == gl_RayQueryCandidateIntersectionTriangleEXT
+		   && hashColor(state++).x < 0.45)
+			rayQueryConfirmIntersectionEXT(rq);
+	}
 
 	vec3 color;
 	if(rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionTriangleEXT){

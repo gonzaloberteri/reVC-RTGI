@@ -45,6 +45,27 @@ vec3 skyRadiance(vec3 dir)
 	return mix(pc.skyBottom.rgb, pc.skyTop.rgb, h);
 }
 
+uint pcg(inout uint state)
+{
+	state = state*747796405u + 2891336453u;
+	uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+	return (word >> 22u) ^ word;
+}
+
+float rnd(inout uint state)
+{
+	return float(pcg(state)) / 4294967296.0;
+}
+
+// non-opaque (alpha-tested foliage) candidates pass through stochastically;
+// the denoiser turns the dither into soft coverage
+#define TRAVERSE(rq) \
+	while(rayQueryProceedEXT(rq)){ \
+		if(rayQueryGetIntersectionTypeEXT(rq, false) == gl_RayQueryCandidateIntersectionTriangleEXT \
+		   && rnd(state) < 0.45) \
+			rayQueryConfirmIntersectionEXT(rq); \
+	}
+
 vec3 unpackAlbedo(uint c)
 {
 	return vec3(float(c & 255u), float((c >> 8) & 255u), float((c >> 16) & 255u)) / 255.0;
@@ -73,26 +94,34 @@ void main()
 	if(dot(normal, viewRay) > 0.0)
 		normal = -normal;
 
-	// reflectivity: per-surface (vehicles) or wet up-facing ground
-	float refl = nr.w;
-	refl = max(refl, pc.wetness * clamp(normal.z, 0.0, 1.0) * 0.4);
-	// fresnel-ish boost at grazing angles
+	// G-buffer normal.w: < 0 = vehicle base reflectivity (negated),
+	// >= 0 = per-surface wet multiplier (roads 1.0, walls 0.25, foliage absent)
 	vec3 viewDir = normalize(viewRay);
-	float fresnel = pow(1.0 - clamp(dot(-viewDir, normal), 0.0, 1.0), 3.0);
-	refl = clamp(refl * (0.6 + 1.4*fresnel), 0.0, 1.0);
+	float ndv = clamp(dot(-viewDir, normal), 0.0, 1.0);
+	float fresnel = pow(1.0 - ndv, 5.0);
+
+	float refl;
+	if(nr.w < 0.0)
+		refl = -nr.w * (0.5 + 1.5*fresnel);	// vehicle paint
+	else
+		// water-like: faint sheen looking straight down, mirror at grazing
+		refl = pc.wetness * clamp(normal.z, 0.0, 1.0) * nr.w * mix(0.06, 0.85, fresnel);
+	refl = clamp(refl, 0.0, 0.75);
 
 	if(refl < 0.02){
 		imageStore(reflImage, ivec2(px), vec4(0.0));
 		return;
 	}
 
+	uint state = px.x*7919u + px.y*104729u + pc.frame*15485863u;
+
 	vec3 worldPos = pc.camPos.xyz + viewRay*depth;
 	vec3 dir = reflect(viewDir, normal);
 	vec3 origin = worldPos + normal*0.05;
 
 	rayQueryEXT rq;
-	rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, 0xFFu, origin, 0.02, dir, 500.0);
-	while(rayQueryProceedEXT(rq)) { }
+	rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, 0xFFu, origin, 0.02, dir, 500.0);
+	TRAVERSE(rq)
 
 	vec3 radiance;
 	if(rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionTriangleEXT){
@@ -124,9 +153,9 @@ void main()
 			if(ndl > 0.0){
 				rayQueryEXT srq;
 				rayQueryInitializeEXT(srq, tlas,
-					gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+					gl_RayFlagsTerminateOnFirstHitEXT,
 					0xFFu, hitPos + hitN*0.05, 0.02, normalize(pc.sunDir.xyz), 500.0);
-				while(rayQueryProceedEXT(srq)) { }
+				TRAVERSE(srq)
 				if(rayQueryGetIntersectionTypeEXT(srq, true) == gl_RayQueryCommittedIntersectionNoneEXT)
 					direct = pc.sunColor.rgb * ndl;
 			}

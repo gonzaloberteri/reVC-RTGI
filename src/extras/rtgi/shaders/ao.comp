@@ -41,6 +41,14 @@ float rnd(inout uint state)
 	return float(pcg(state)) / 4294967296.0;
 }
 
+// non-opaque (alpha-tested foliage) candidates pass through stochastically
+#define TRAVERSE(rq) \
+	while(rayQueryProceedEXT(rq)){ \
+		if(rayQueryGetIntersectionTypeEXT(rq, false) == gl_RayQueryCandidateIntersectionTriangleEXT \
+		   && rnd(state) < 0.45) \
+			rayQueryConfirmIntersectionEXT(rq); \
+	}
+
 vec3 cosineHemisphere(vec3 n, inout uint state)
 {
 	float r1 = rnd(state);
@@ -88,9 +96,9 @@ void main()
 		vec3 dir = cosineHemisphere(normal, state);
 		rayQueryEXT rq;
 		rayQueryInitializeEXT(rq, tlas,
-			gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+			gl_RayFlagsTerminateOnFirstHitEXT,
 			0xFF, origin, 0.02, dir, pc.aoRadius);
-		while(rayQueryProceedEXT(rq)) { }
+		TRAVERSE(rq)
 		if(rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT)
 			vis += 1.0;
 		else{
@@ -114,9 +122,9 @@ void main()
 
 		rayQueryEXT rq;
 		rayQueryInitializeEXT(rq, tlas,
-			gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+			gl_RayFlagsTerminateOnFirstHitEXT,
 			SUN_SHADOW_MASK, origin, 0.02, sd, 300.0);
-		while(rayQueryProceedEXT(rq)) { }
+		TRAVERSE(rq)
 		if(rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT)
 			sunVis = 0.0;
 	}

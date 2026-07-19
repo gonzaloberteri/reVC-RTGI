@@ -16,6 +16,7 @@
 #include "Entity.h"
 #include "World.h"
 #include "Timecycle.h"
+#include "ModelInfo.h"
 
 namespace RayTracedGI {
 
@@ -122,8 +123,12 @@ gbufDrawAtomic(rw::Atomic *atomic)
 	InstanceData *inst = header->inst;
 	for(rw::uint32 i = 0; i < header->numMeshes; i++, inst++){
 		rw::Material *m = inst->material;
-		// opaque meshes only; transparency can't occlude reliably
+		// opaque meshes only; transparency can't occlude reliably, and
+		// alpha-textured foliage must not become a wet-reflective surface
 		if(inst->vertexAlpha || m->color.alpha != 255)
+			continue;
+		if(m->texture && m->texture->raster &&
+		   PLUGINOFFSET(rw::gl3::Gl3Raster, m->texture->raster, rw::gl3::nativeRasterOffset)->hasAlpha)
 			continue;
 		drawInst(header, inst);
 	}
@@ -160,8 +165,18 @@ GbufferRender(void)
 		if(e->m_rwObject == nil || e->IsPed())
 			continue;
 
-		// vehicles are reflective (RT replacement for the env map look)
-		float refl[4] = { e->IsVehicle() ? 0.35f : 0.0f, 0.0f, 0.0f, 0.0f };
+		// G-buffer normal.w: < 0 = vehicle base reflectivity (negated),
+		// >= 0 = wet-weather reflectivity multiplier. Roads use the game's
+		// own per-model wet-reflection flag; other surfaces get a light sheen.
+		float reflW;
+		if(e->IsVehicle())
+			reflW = -0.35f;
+		else if(e->IsBuilding() &&
+		   ((CSimpleModelInfo*)CModelInfo::GetModelInfo(e->GetModelIndex()))->m_wetRoadReflection)
+			reflW = 1.0f;
+		else
+			reflW = 0.25f;
+		float refl[4] = { reflW, 0.0f, 0.0f, 0.0f };
 		glUniform4fv(U(u_gbParams), 1, refl);
 
 		if(RwObjectGetType(e->m_rwObject) == rpATOMIC)

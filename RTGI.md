@@ -20,10 +20,17 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
 - **Sun/moon shadows** — vehicles and peds cast accurate ray traced shadows
   (replaces their blob shadows); world sun light stays baked, as shipped
 - **Point lights** — streetlights/headlights feed the GI bounce (NEE)
-- **Reflections** — wet roads mirror the actual scene when it rains; vehicles
-  carry per-surface reflectivity in the G-buffer
+- **Reflections** — wet roads mirror the actual scene when it rains, with a
+  physically-shaped Fresnel curve (faint sheen straight down, mirror at
+  grazing); per-surface reflectivity rides in G-buffer normal.w — vehicles
+  encode base paint reflectivity (negated), roads use the game's own
+  per-model wet-reflection flag, other surfaces get a light sheen
 - **Skinned peds** — CPU-posed every frame into per-ped BLASes so they occlude
   and cast like everything else
+- **Foliage** — alpha-tested materials (palms, shrubs) build as non-opaque
+  BLAS ranges; every RT pass traverses them stochastically (45% coverage) so
+  canopies cast soft partial shadows/AO instead of solid-quad blobs, and the
+  G-buffer excludes them from the wet-sheen treatment
 
 ## Architecture
 
@@ -67,5 +74,14 @@ instances, AO, G-buffer, sun visibility, GI, reflections).
 `enabled/ao/gi/denoise/reflections/sunshadows=0|1`, `aostrength/aoradius/
 giblend/giexposure=F`, `aorays=N`, `shotframes=N` (periodic BMP dumps),
 `tp=x,y,z` (teleport after load), `hour=N`, `weather=N`,
-plus `rtgi_autoload.txt` containing a save slot number (1-8) to auto-load.
+plus `rtgi_autoload.txt` containing a save slot number (1-8) to auto-load
+and `rtgi_window.txt` ("W H") forcing a small window for background runs.
+The harness (teleport/clock/weather/screenshots) also works with
+`enabled=0`, so vanilla comparison runs land in the identical scene.
 `rtgi.log` carries init diagnostics and TLAS/BLAS telemetry.
+
+## Backlog / notes
+
+See `AGENT_PROMPT.md` for the living backlog. Tuned constants worth
+revisiting: foliage stochastic coverage 0.45 (`TRAVERSE` macros + primary),
+wall wet sheen 0.25, road wet reflectivity cap 0.75, vehicle paint base 0.35.

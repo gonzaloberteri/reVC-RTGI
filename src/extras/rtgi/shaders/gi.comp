@@ -80,13 +80,21 @@ vec3 unpackAlbedo(uint c)
 	return vec3(float(c & 255u), float((c >> 8) & 255u), float((c >> 16) & 255u)) / 255.0;
 }
 
-bool shadowRayHit(vec3 origin, vec3 dir)
+// non-opaque (alpha-tested foliage) candidates pass through stochastically
+#define TRAVERSE(rq) \
+	while(rayQueryProceedEXT(rq)){ \
+		if(rayQueryGetIntersectionTypeEXT(rq, false) == gl_RayQueryCandidateIntersectionTriangleEXT \
+		   && rnd(state) < 0.45) \
+			rayQueryConfirmIntersectionEXT(rq); \
+	}
+
+bool shadowRayHit(vec3 origin, vec3 dir, inout uint state)
 {
 	rayQueryEXT rq;
 	rayQueryInitializeEXT(rq, tlas,
-		gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+		gl_RayFlagsTerminateOnFirstHitEXT,
 		0xFFu, origin, 0.05, dir, 500.0);
-	while(rayQueryProceedEXT(rq)) { }
+	TRAVERSE(rq)
 	return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT;
 }
 
@@ -121,8 +129,8 @@ void main()
 	vec3 dir = cosineHemisphere(normal, state);
 
 	rayQueryEXT rq;
-	rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, 0xFFu, origin, 0.02, dir, 200.0);
-	while(rayQueryProceedEXT(rq)) { }
+	rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, 0xFFu, origin, 0.02, dir, 200.0);
+	TRAVERSE(rq)
 
 	vec3 radiance;
 	if(rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionTriangleEXT){
@@ -154,7 +162,7 @@ void main()
 		vec3 direct = vec3(0.0);
 		if(pc.sunDir.w > 0.0){
 			float ndl = dot(hitN, normalize(pc.sunDir.xyz));
-			if(ndl > 0.0 && !shadowRayHit(hitPos + hitN*0.05, normalize(pc.sunDir.xyz)))
+			if(ndl > 0.0 && !shadowRayHit(hitPos + hitN*0.05, normalize(pc.sunDir.xyz), state))
 				direct = pc.sunColor.rgb * ndl;
 		}
 		// crude sky term at the hit: sky radiance weighted by upness
@@ -174,9 +182,9 @@ void main()
 				if(ndl > 0.0){
 					rayQueryEXT srq;
 					rayQueryInitializeEXT(srq, tlas,
-						gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+						gl_RayFlagsTerminateOnFirstHitEXT,
 						0xFFu, hitPos + hitN*0.05, 0.02, toL, d - 0.1);
-					while(rayQueryProceedEXT(srq)) { }
+					TRAVERSE(srq)
 					if(rayQueryGetIntersectionTypeEXT(srq, true) == gl_RayQueryCommittedIntersectionNoneEXT){
 						float falloff = 1.0 - d/L.posRadius.w;
 						pointLight = L.color.rgb * (ndl * falloff * float(pc.numLights));

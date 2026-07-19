@@ -286,6 +286,18 @@ BlasGetOrBuild(rw::Geometry *geo, VkCommandBuffer cmd)
 		}
 	}
 
+	// alpha-tested materials (foliage etc.) build as non-opaque so rays can
+	// stochastically pass through them instead of hitting solid quads
+	auto materialAlphaTested = [](rw::Material *m) -> bool {
+		if(m == nil)
+			return false;
+		if(m->color.alpha != 255)
+			return true;
+		if(m->texture && m->texture->raster)
+			return PLUGINOFFSET(rw::gl3::Gl3Raster, m->texture->raster, rw::gl3::nativeRasterOffset)->hasAlpha;
+		return false;
+	};
+
 	// geometry ranges
 	std::vector<VkAccelerationStructureGeometryKHR> geoms;
 	std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges;
@@ -296,7 +308,8 @@ BlasGetOrBuild(rw::Geometry *geo, VkCommandBuffer cmd)
 			continue;
 		VkAccelerationStructureGeometryKHR g = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
 		g.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-		g.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;	// alpha handled later via material records
+		rw::Material *rangeMat = m < geo->matList.numMaterials ? geo->matList.materials[m] : nil;
+		g.flags = materialAlphaTested(rangeMat) ? 0 : VK_GEOMETRY_OPAQUE_BIT_KHR;
 		g.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
 		g.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
 		g.geometry.triangles.vertexData.deviceAddress = e->vtxBuf.addr;
