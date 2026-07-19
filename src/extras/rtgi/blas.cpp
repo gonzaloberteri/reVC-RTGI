@@ -112,6 +112,164 @@ materialAlbedo(rw::Material *mat)
 	return r | (g << 8) | (b << 16) | 0xFF000000u;
 }
 
+// --- hit-point texture cache --------------------------------------------------
+// small copies of game textures, GL-read once and uploaded into a VK sampled-
+// image array; hit shaders sample these for real albedo instead of the mean
+
+enum { TEXCACHE_MAXDIM = 128 };
+
+static GpuImage gCacheImgs[TEXCACHE_MAX];
+static uint32_t gNumCacheImgs;
+static VkSampler gCacheSampler;
+static std::unordered_map<rw::Texture*, uint32_t> gTexSlotCache;
+
+uint32_t
+TexCacheCount(void)
+{
+	return gNumCacheImgs;
+}
+
+VkImageView
+TexCacheView(uint32_t slot)
+{
+	return slot < gNumCacheImgs ? gCacheImgs[slot].view : VK_NULL_HANDLE;
+}
+
+VkSampler
+TexCacheSampler(void)
+{
+	if(gCacheSampler == VK_NULL_HANDLE){
+		VkSamplerCreateInfo si = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+		si.magFilter = VK_FILTER_LINEAR;
+		si.minFilter = VK_FILTER_LINEAR;
+		si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+		si.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;	// VC textures tile
+		si.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		vkCreateSampler(gVk.device, &si, nullptr, &gCacheSampler);
+	}
+	return gCacheSampler;
+}
+
+// upload w*h RGBA8 pixels sitting in staging into a fresh cache image; the
+// staging buffer joins the frame scratch list (freed once the fence proves
+// the copy done). Returns the slot or UINT32_MAX.
+static uint32_t
+texCacheUpload(GpuBuffer staging, int w, int h, VkCommandBuffer cmd)
+{
+	GpuImage *img = &gCacheImgs[gNumCacheImgs];
+	if(!ImageCreate(img, w, h, VK_FORMAT_R8G8B8A8_UNORM,
+	   VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)){
+		BufferDestroy(&staging);
+		return UINT32_MAX;
+	}
+
+	VkImageMemoryBarrier bar = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+	bar.srcAccessMask = 0;
+	bar.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	bar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	bar.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	bar.image = img->image;
+	bar.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		0, 0, nullptr, 0, nullptr, 1, &bar);
+
+	VkBufferImageCopy region = {};
+	region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+	region.imageExtent = { (uint32_t)w, (uint32_t)h, 1 };
+	vkCmdCopyBufferToImage(cmd, staging.buf, img->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+	bar.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	bar.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	bar.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		0, 0, nullptr, 0, nullptr, 1, &bar);
+
+	gFrameScratch.push_back(staging);
+	return gNumCacheImgs++;
+}
+
+void
+TexCacheEnsureDummy(VkCommandBuffer cmd)
+{
+	if(gNumCacheImgs > 0)
+		return;
+	GpuBuffer staging;
+	if(!BufferCreate(&staging, 4*4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true))
+		return;
+	memset(staging.mapped, 0xFF, 4*4);	// 2x2 white
+	texCacheUpload(staging, 2, 2, cmd);
+}
+
+static uint32_t
+textureSlot(rw::Texture *tex, VkCommandBuffer cmd)
+{
+	if(tex == nil || tex->raster == nil)
+		return UINT32_MAX;
+	auto it = gTexSlotCache.find(tex);
+	if(it != gTexSlotCache.end())
+		return it->second;
+	if(gNumCacheImgs >= TEXCACHE_MAX){
+		static bool warned;
+		if(!warned){
+			RtgiLog("RTGI: texture cache full (%u)\n", gNumCacheImgs);
+			warned = true;
+		}
+		return UINT32_MAX;
+	}
+
+	uint32_t slot = UINT32_MAX;
+	rw::gl3::Gl3Raster *natras = PLUGINOFFSET(rw::gl3::Gl3Raster, tex->raster, rw::gl3::nativeRasterOffset);
+	if(natras && natras->texid){
+		GLint prevTex;
+		glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex);
+		glBindTexture(GL_TEXTURE_2D, natras->texid);
+		GLint w = 0, h = 0;
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+		// pick a small mip if there is one
+		int level = 0;
+		while((w >> level) > TEXCACHE_MAXDIM && (h >> level) > TEXCACHE_MAXDIM)
+			level++;
+		GLint lw = 0;
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_WIDTH, &lw);
+		if(lw == 0)
+			level = 0;
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_WIDTH, &w);
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_HEIGHT, &h);
+		if(w > 0 && h > 0 && w <= 512 && h <= 512){
+			GpuBuffer staging;
+			if(BufferCreate(&staging, (VkDeviceSize)w*h*4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true)){
+				glPixelStorei(GL_PACK_ALIGNMENT, 1);
+				glGetTexImage(GL_TEXTURE_2D, level, GL_RGBA, GL_UNSIGNED_BYTE, staging.mapped);
+				if(glGetError() == GL_NO_ERROR)
+					slot = texCacheUpload(staging, w, h, cmd);
+				else
+					BufferDestroy(&staging);
+			}
+		}
+		glBindTexture(GL_TEXTURE_2D, prevTex);
+	}
+	gTexSlotCache[tex] = slot;
+	return slot;
+}
+
+static void
+texCacheShutdown(void)
+{
+	for(uint32_t i = 0; i < gNumCacheImgs; i++)
+		ImageDestroy(&gCacheImgs[i]);
+	gNumCacheImgs = 0;
+	gTexSlotCache.clear();
+	if(gCacheSampler){
+		vkDestroySampler(gVk.device, gCacheSampler, nullptr);
+		gCacheSampler = VK_NULL_HANDLE;
+	}
+}
+
 // --- geometry destructor plugin ----------------------------------------------
 
 #define ID_RTGI 0x52544749	// 'RTGI'
@@ -154,6 +312,7 @@ blasEntryDestroy(BlasEntry *e)
 	BufferDestroy(&e->asBuf);
 	BufferDestroy(&e->vtxBuf);
 	BufferDestroy(&e->idxBuf);
+	BufferDestroy(&e->uvBuf);
 	delete e;
 }
 
@@ -173,6 +332,8 @@ BlasShutdown(void)
 	gFrameScratch.clear();
 	gPrevFrameScratch.clear();
 	gNumRecords = 0;
+	texCacheShutdown();
+	gTexMeanCache.clear();
 }
 
 void
@@ -264,6 +425,17 @@ BlasGetOrBuild(rw::Geometry *geo, VkCommandBuffer cmd, float emissiveScale)
 		vtx[i*3+2] = src[i].z;
 	}
 
+	// texcoords for real-albedo fetches at hit points (optional)
+	if(geo->numTexCoordSets > 0 && geo->texCoords[0] &&
+	   BufferCreate(&e->uvBuf, geo->numVertices * 2*sizeof(float), inputUsage, true)){
+		float *uv = (float*)e->uvBuf.mapped;
+		rw::TexCoords *uvsrc = geo->texCoords[0];
+		for(int32_t i = 0; i < geo->numVertices; i++){
+			uv[i*2+0] = uvsrc[i].u;
+			uv[i*2+1] = uvsrc[i].v;
+		}
+	}
+
 	// indices: per-material ranges back to back
 	uint32_t *idx = (uint32_t*)e->idxBuf.mapped;
 	std::vector<uint32_t> matOffset(numMats, 0);	// in triangles
@@ -327,7 +499,13 @@ BlasGetOrBuild(rw::Geometry *geo, VkCommandBuffer cmd, float emissiveScale)
 		GeomRecord &rec = gRecords[gNumRecords++];
 		rec.vtxAddr = e->vtxBuf.addr;
 		rec.idxAddr = e->idxBuf.addr + matOffset[m]*3*sizeof(uint32_t);
+		rec.uvAddr = e->uvBuf.buf ? e->uvBuf.addr : 0;
 		rec.albedo = materialAlbedo(m < geo->matList.numMaterials ? geo->matList.materials[m] : nil);
+		rw::Material *recMat = m < geo->matList.numMaterials ? geo->matList.materials[m] : nil;
+		rec.texSlot = (rec.uvAddr && recMat) ? textureSlot(recMat->texture, cmd) : UINT32_MAX;
+		rec.matColor = recMat ?
+			((uint32_t)recMat->color.red | ((uint32_t)recMat->color.green << 8) |
+			 ((uint32_t)recMat->color.blue << 16)) : 0xFFFFFFu;
 		// night-model materials emit their own (mean) color, but only the
 		// bright ones (neon tubes, lit windows) — large dim facade surfaces
 		// of night meshes must not become area lights, and emission scales

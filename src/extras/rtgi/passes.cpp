@@ -136,11 +136,18 @@ struct GpuPointLight
 enum { MAX_GI_LIGHTS = 96 };
 static GpuBuffer gLightBuf;
 static uint32_t gLastNumLights;
+static uint32_t gLastNumHeadlights;
 
 uint32_t
 GiLightCount(void)
 {
 	return gLastNumLights;
+}
+
+uint32_t
+GiHeadlightCount(void)
+{
+	return gLastNumHeadlights;
 }
 
 // reflections
@@ -166,6 +173,22 @@ static int gAccumIndex;
 static bool gGiImagesInitialised;	// UNDEFINED->GENERAL done
 static float gPrevCam[16];		// pos/right/up/fwd with vw in w
 static bool gHavePrevCam;
+
+// image infos for the texture-cache array binding; slots beyond the cached
+// count alias slot 0 (the white dummy) so every descriptor stays valid
+static VkDescriptorImageInfo*
+texCacheInfos(void)
+{
+	static VkDescriptorImageInfo infos[TEXCACHE_MAX];
+	uint32_t n = TexCacheCount();
+	VkSampler sampler = TexCacheSampler();
+	for(uint32_t i = 0; i < TEXCACHE_MAX; i++){
+		infos[i].sampler = sampler;
+		infos[i].imageView = TexCacheView(i < n ? i : 0);
+		infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	}
+	return infos;
+}
 
 static VkPipeline
 createComputePipeline(const uint32_t *code, size_t codeSize, VkPipelineLayout layout)
@@ -248,7 +271,8 @@ PassesInit(void)
 		{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 8 },
 		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 24 },
 		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8 },
-		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 32 },
+		// + the two texture-cache arrays (GI + reflections)
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 32 + 2*TEXCACHE_MAX },
 	};
 	VkDescriptorPoolCreateInfo dpInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
 	dpInfo.maxSets = 12;
@@ -325,23 +349,25 @@ PassesInit(void)
 	// --- GI pass ---------------------------------------------------------
 
 	{
-	VkDescriptorSetLayoutBinding b[6] = {};
-	VkDescriptorType types[6] = {
+	VkDescriptorSetLayoutBinding b[7] = {};
+	VkDescriptorType types[7] = {
 		VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// texture cache array
 	};
-	for(int i = 0; i < 6; i++){
+	for(int i = 0; i < 7; i++){
 		b[i].binding = i;
 		b[i].descriptorType = types[i];
 		b[i].descriptorCount = 1;
 		b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 	}
+	b[6].descriptorCount = TEXCACHE_MAX;
 	VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-	li.bindingCount = 6;
+	li.bindingCount = 7;
 	li.pBindings = b;
 	if(vkCreateDescriptorSetLayout(gVk.device, &li, nullptr, &gGiSetLayout) != VK_SUCCESS)
 		return false;
@@ -416,22 +442,24 @@ PassesInit(void)
 	// --- reflections -----------------------------------------------------
 
 	{
-	VkDescriptorSetLayoutBinding b[5] = {};
-	VkDescriptorType types[5] = {
+	VkDescriptorSetLayoutBinding b[6] = {};
+	VkDescriptorType types[6] = {
 		VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// texture cache array
 	};
-	for(int i = 0; i < 5; i++){
+	for(int i = 0; i < 6; i++){
 		b[i].binding = i;
 		b[i].descriptorType = types[i];
 		b[i].descriptorCount = 1;
 		b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 	}
+	b[5].descriptorCount = TEXCACHE_MAX;
 	VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-	li.bindingCount = 5;
+	li.bindingCount = 6;
 	li.pBindings = b;
 	if(vkCreateDescriptorSetLayout(gVk.device, &li, nullptr, &gReflSetLayout) != VK_SUCCESS)
 		return false;
@@ -761,6 +789,7 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 			}
 
 			// headlight cones for every nearby vehicle with lights on
+			gLastNumHeadlights = 0;
 			CVector camPos = TheCamera.GetPosition();
 			CVehiclePool *pool = CPools::GetVehiclePool();
 			for(int i = 0; pool && i < pool->GetSize() && numLights < MAX_GI_LIGHTS; i++){
@@ -770,6 +799,7 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 				CVector d = veh->GetPosition() - camPos;
 				if(d.MagnitudeSqr() > sq(90.0f))
 					continue;
+				gLastNumHeadlights++;
 				CVector fwd = veh->GetForward();
 				CVector pos = veh->GetPosition() + fwd*2.2f;
 				// aim slightly down so the beam pools on the road ahead
@@ -805,8 +835,8 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 	VkDescriptorBufferInfo bufInfo = { records->buf, 0, VK_WHOLE_SIZE };
 	VkDescriptorBufferInfo lightInfo = { gLightBuf.buf, 0, VK_WHOLE_SIZE };
 
-	VkWriteDescriptorSet writes[6] = {};
-	for(int i = 0; i < 6; i++){
+	VkWriteDescriptorSet writes[7] = {};
+	for(int i = 0; i < 7; i++){
 		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[i].dstSet = gGiDescSet;
 		writes[i].dstBinding = i;
@@ -824,7 +854,10 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 	writes[4].pBufferInfo = &bufInfo;
 	writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	writes[5].pBufferInfo = &lightInfo;
-	vkUpdateDescriptorSets(gVk.device, 6, writes, 0, nullptr);
+	writes[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	writes[6].descriptorCount = TEXCACHE_MAX;
+	writes[6].pImageInfo = texCacheInfos();
+	vkUpdateDescriptorSets(gVk.device, 7, writes, 0, nullptr);
 	}
 
 	GiPushConstants gpc = {};
@@ -929,8 +962,8 @@ PassesTraceReflections(VkCommandBuffer cmd, uint32_t frame)
 	GpuBuffer *records = BlasRecordBuffer();
 	VkDescriptorBufferInfo bufInfo = { records->buf, 0, VK_WHOLE_SIZE };
 
-	VkWriteDescriptorSet writes[5] = {};
-	for(int i = 0; i < 5; i++){
+	VkWriteDescriptorSet writes[6] = {};
+	for(int i = 0; i < 6; i++){
 		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[i].dstSet = gReflDescSet;
 		writes[i].dstBinding = i;
@@ -946,7 +979,10 @@ PassesTraceReflections(VkCommandBuffer cmd, uint32_t frame)
 	writes[3].pImageInfo = &depthInfo;
 	writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	writes[4].pBufferInfo = &bufInfo;
-	vkUpdateDescriptorSets(gVk.device, 5, writes, 0, nullptr);
+	writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	writes[5].descriptorCount = TEXCACHE_MAX;
+	writes[5].pImageInfo = texCacheInfos();
+	vkUpdateDescriptorSets(gVk.device, 6, writes, 0, nullptr);
 
 	ReflPushConstants pc = {};
 	fillCamera(pc.camPos, pc.camRight, pc.camUp, pc.camFwd);

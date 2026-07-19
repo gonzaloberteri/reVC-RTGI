@@ -18,18 +18,34 @@ struct BlasEntry
 	GpuBuffer asBuf;
 	GpuBuffer vtxBuf;	// vec3 float positions, device address readable
 	GpuBuffer idxBuf;	// uint32 indices, all material ranges back to back
+	GpuBuffer uvBuf;	// vec2 float texcoords (optional; 0 when absent)
 	int32_t numRanges;	// == number of non-empty material buckets
 	uint32_t firstRecord;	// index of this geometry's first GeomRecord
 };
 
-// per (BLAS, geometry range) record the shaders use to fetch triangle data
+// per (BLAS, geometry range) record the shaders use to fetch triangle data.
+// layout mirrored in gi.comp/refl.comp — keep in sync
 struct GeomRecord
 {
 	VkDeviceAddress vtxAddr;
 	VkDeviceAddress idxAddr;	// start of this range's indices
-	uint32_t albedo;		// RGBA8: material color x mean texture color
+	VkDeviceAddress uvAddr;		// vec2 texcoords, 0 when the mesh has none
+	uint32_t albedo;		// RGBA8: material color x mean texture color (fallback)
 	uint32_t emissive;		// RGBA8 emitted color (night windows/neon); 0 = none
+	uint32_t texSlot;		// texture cache slot for real albedo; ~0u = none
+	uint32_t matColor;		// RGBA8 plain material color (multiplies the texture)
 };
+
+// --- hit-point texture cache: downsampled copies of game textures in a
+// sampled-image array so hit shaders fetch real albedo -----------------------
+enum { TEXCACHE_MAX = 1024 };
+
+// records the slot-0 dummy upload on first use; call once per frame before
+// the trace passes are recorded
+void TexCacheEnsureDummy(VkCommandBuffer cmd);
+uint32_t TexCacheCount(void);
+VkImageView TexCacheView(uint32_t slot);
+VkSampler TexCacheSampler(void);
 
 // register the librw geometry-destructor plugin. Call once, before game
 // assets load, so streamed-out geometry frees its BLAS automatically.

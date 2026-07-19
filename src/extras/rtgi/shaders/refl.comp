@@ -2,6 +2,7 @@
 #extension GL_EXT_ray_query : require
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_nonuniform_qualifier : require
 
 // Mirror reflections for reflective pixels: G-buffer normal.w carries per-
 // surface reflectivity (vehicles from the prepass); up-facing surfaces gain
@@ -20,10 +21,14 @@ layout(buffer_reference, std430, buffer_reference_align = 4) buffer UintBuf { ui
 struct GeomRecord {
 	uint64_t vtx;
 	uint64_t idx;
-	uint albedo;
+	uint64_t uv;	// vec2 texcoords, 0 when the mesh has none
+	uint albedo;	// mean-color fallback
 	uint emissive;	// RGBA8 emitted color (night windows/neon); 0 = none
+	uint texSlot;	// texture cache slot; ~0u = none
+	uint matColor;	// RGBA8 plain material color
 };
 layout(binding = 4, std430) readonly buffer Records { GeomRecord records[]; };
+layout(binding = 5) uniform sampler2D texCache[];	// real hit albedo
 
 layout(push_constant) uniform PC {
 	vec4 camPos;
@@ -133,13 +138,25 @@ void main()
 		uint prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
 
 		GeomRecord rec = records[inst + geomIdx];
-		vec3 albedo = unpackAlbedo(rec.albedo);
 
 		UintBuf ib = UintBuf(rec.idx);
 		FloatBuf vb = FloatBuf(rec.vtx);
 		uint i0 = ib.u[prim*3u+0u];
 		uint i1 = ib.u[prim*3u+1u];
 		uint i2 = ib.u[prim*3u+2u];
+
+		// real albedo: texture fetch at the hit UV; mean color as fallback
+		vec3 albedo = unpackAlbedo(rec.albedo);
+		if(rec.texSlot != 0xFFFFFFFFu && rec.uv != uint64_t(0)){
+			vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+			FloatBuf uvb = FloatBuf(rec.uv);
+			vec2 uv0 = vec2(uvb.f[i0*2u], uvb.f[i0*2u+1u]);
+			vec2 uv1 = vec2(uvb.f[i1*2u], uvb.f[i1*2u+1u]);
+			vec2 uv2 = vec2(uvb.f[i2*2u], uvb.f[i2*2u+1u]);
+			vec2 huv = uv0*(1.0 - bary.x - bary.y) + uv1*bary.x + uv2*bary.y;
+			albedo = textureLod(texCache[nonuniformEXT(rec.texSlot)], huv, 0.0).rgb
+				* unpackAlbedo(rec.matColor);
+		}
 		vec3 p0 = vec3(vb.f[i0*3u], vb.f[i0*3u+1u], vb.f[i0*3u+2u]);
 		vec3 p1 = vec3(vb.f[i1*3u], vb.f[i1*3u+1u], vb.f[i1*3u+2u]);
 		vec3 p2 = vec3(vb.f[i2*3u], vb.f[i2*3u+1u], vb.f[i2*3u+2u]);

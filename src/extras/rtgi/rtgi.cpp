@@ -368,6 +368,7 @@ RenderFrame(void)
 	bool traced = false;
 	if(wantTrace){
 		BlasBeginFrame();
+		TexCacheEnsureDummy(gVk.cmdBuf);	// slot 0 backs unused array entries
 		TlasCollect(gVk.cmdBuf);	// walks game world, queues BLAS builds
 		traced = TlasBuild(gVk.cmdBuf);
 	}
@@ -466,8 +467,8 @@ RenderFrame(void)
 	vkEndCommandBuffer(gVk.cmdBuf);
 
 	if(traced && (frameCounter % 300) == 0)
-		RtgiLog("RTGI: %u TLAS instances, %d BLASes, %u GI lights (paused=%d menu=%d fade=%d)\n",
-			TlasInstanceCount(), BlasCount(), GiLightCount(),
+		RtgiLog("RTGI: %u TLAS instances, %d BLASes, %u GI lights (%u headlights), %u cached textures (paused=%d menu=%d fade=%d)\n",
+			TlasInstanceCount(), BlasCount(), GiLightCount(), GiHeadlightCount(), TexCacheCount(),
 			CTimer::GetIsPaused(), FrontEndMenuManager.m_bMenuActive, CDraw::FadeValue);
 
 	VkSemaphore waitSems[2];

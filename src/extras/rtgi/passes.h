@@ -27,6 +27,7 @@ void PassesTraceReflections(VkCommandBuffer cmd, uint32_t frame);
 
 // lights fed to the last GI pass (game point lights + headlight cones)
 uint32_t GiLightCount(void);
+uint32_t GiHeadlightCount(void);
 
 }
 

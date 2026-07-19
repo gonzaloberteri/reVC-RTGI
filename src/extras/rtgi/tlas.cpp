@@ -103,8 +103,11 @@ pedSlotInit(PedSlot *s)
 	GeomRecord rec;
 	rec.vtxAddr = s->vtxBuf.addr;
 	rec.idxAddr = s->idxBuf.addr;
+	rec.uvAddr = 0;
 	rec.albedo = 0xFF707070u;	// generic clothing gray for GI bounces
 	rec.emissive = 0;
+	rec.texSlot = UINT32_MAX;
+	rec.matColor = 0xFFFFFFu;
 	s->record = BlasAllocRecord(rec);
 	if(s->record == UINT32_MAX)
 		return false;
