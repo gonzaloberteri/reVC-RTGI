@@ -20,6 +20,7 @@
 #include "Timecycle.h"
 #include "ModelInfo.h"
 #include "WaterLevel.h"
+#include "Weather.h"
 
 namespace RayTracedGI {
 
@@ -297,7 +298,11 @@ uploadCompositeUniforms(void)
 	float shadowStrength = gbSunShadows ? (CTimeCycle::GetShadowStrength()/255.0f)*0.55f : 0.0f;
 	float params[4] = { gfAOStrength, 1.0f/gWidth, 1.0f/gHeight, shadowStrength };
 	glUniform4fv(U(u_rtgiParams), 1, params);
-	float giParams[4] = { gbGIEnable ? gfGIBlend : 0.0f, gfGIExposure, 0.0f, 0.0f };
+	// rain: the GI tracks the dark storm sky and reads gloomier than the
+	// vanilla art direction, so ease back toward the flat timecycle
+	// ambient as the rain comes down
+	float giBlend = gbGIEnable ? gfGIBlend * (1.0f - 0.4f*CWeather::Rain) : 0.0f;
+	float giParams[4] = { giBlend, gfGIExposure, 0.0f, 0.0f };
 	glUniform4fv(U(u_rtgiGIParams), 1, giParams);
 }
 

@@ -90,12 +90,19 @@ AO strength/radius/rays, GI blend/exposure, debug views (RT normals/depth/
 instances, AO, G-buffer, sun visibility, GI, reflections).
 
 `rtgi_config.txt` next to the exe (for automated testing): `view=N`,
-`enabled/ao/gi/gi2/denoise/reflections/sunshadows=0|1`, `aostrength/
-aoradius/giblend/giexposure/emissive=F`, `aorays=N`, `shotframes=N`
-(periodic BMP dumps), `tp=x,y,z` (teleport after load), `area=N`
-(interior for the teleport, eAreaName in Game.h), `hour=N`, `weather=N`,
-plus `rtgi_autoload.txt` containing a save slot number (1-8) to auto-load
-and `rtgi_window.txt` ("W H") forcing a small window for background runs.
+`enabled/ao/gi/gi2/photo/denoise/reflections/sunshadows=0|1`,
+`aostrength/aoradius/giblend/giexposure/emissive=F`, `aorays=N`,
+`shotframes=N` (periodic BMP dumps), `tp=x,y,z[,heading]` (teleport
+after load; heading in degrees, 0 = north, CCW, snaps the camera
+behind), `area=N` (interior for the teleport, eAreaName in Game.h),
+`hour=N`, `weather=N`, plus `rtgi_autoload.txt` containing a save slot
+number (1-8) to auto-load and `rtgi_window.txt` ("W H") forcing a small
+window for background runs.
+
+Photo mode (`photo=1` / debug menu): while the camera holds still the GI
+accumulates a true average (up to 4096 spp, denoiser bypassed, 90%
+second-bounce probability) for clean reference shots; any camera motion
+restarts the average.
 The harness (teleport/clock/weather/screenshots) also works with
 `enabled=0`, so vanilla comparison runs land in the identical scene.
 `rtgi.log` carries init diagnostics and TLAS/BLAS telemetry.
