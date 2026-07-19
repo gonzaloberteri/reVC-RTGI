@@ -87,4 +87,19 @@ The harness (teleport/clock/weather/screenshots) also works with
 
 See `AGENT_PROMPT.md` for the living backlog. Tuned constants worth
 revisiting: foliage stochastic coverage 0.45 (`TRAVERSE` macros + primary),
-wall wet sheen 0.25, road wet reflectivity cap 0.75, vehicle paint base 0.35.
+wall wet sheen 0.25, road wet reflectivity cap 0.75, vehicle paint base
+0.35 with clearcoat Fresnel mix(0.08, 2.0, pow5).
+
+`docs/baseline/` holds known-good sweep screenshots (noon/night/rain at
+tp=230,-1290,12, hotel exterior, vanilla). Refresh when a change
+intentionally improves the look.
+
+Observations to revisit:
+- Rain feels darker than vanilla art direction (GI pulls ambient toward the
+  dark storm sky); consider scaling giblend down in rain, or brightening the
+  sky term under overcast weathers.
+- Interiors are unreachable by the test harness: config `tp=` forces
+  AREA_MAIN_MAP. Add an `area=` config key to enable interior baselines.
+- Vehicle windshields are non-opaque in the BLAS, so reflections that hit
+  glass dither at 45% coverage; real albedo/glass handling (backlog #4)
+  would clean this up.
