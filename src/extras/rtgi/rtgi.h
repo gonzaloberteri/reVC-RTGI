@@ -38,6 +38,7 @@ extern float gfGIBlend;		// 0 = flat timecycle ambient, 1 = full GI
 extern float gfGIExposure;
 extern bool gbDenoise;
 extern bool gbReflections;
+extern float gfEmissiveBoost;	// night windows/neon radiance multiplier
 
 // true when RT shadows replace the vehicle blob shadows this frame
 bool ReplacingVehicleShadows(void);

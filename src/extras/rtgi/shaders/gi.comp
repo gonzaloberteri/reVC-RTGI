@@ -22,7 +22,7 @@ struct GeomRecord {
 	uint64_t vtx;
 	uint64_t idx;
 	uint albedo;
-	uint pad;
+	uint emissive;	// RGBA8 emitted color (night windows/neon); 0 = none
 };
 layout(binding = 4, std430) readonly buffer Records { GeomRecord records[]; };
 
@@ -193,7 +193,10 @@ void main()
 			}
 		}
 
-		radiance = albedo * (direct + skyAmb + pointLight);
+		// self-emission (night windows, neon): sunColor.w carries the
+		// emissive boost knob
+		radiance = albedo * (direct + skyAmb + pointLight)
+			+ unpackAlbedo(rec.emissive) * pc.sunColor.w;
 	}else{
 		// sky visible from the surface: this is the sky-light term
 		radiance = skyRadiance(dir);

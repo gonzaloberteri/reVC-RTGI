@@ -61,6 +61,7 @@ float gfGIBlend = 0.6f;
 float gfGIExposure = 1.0f;
 bool gbDenoise = true;
 bool gbReflections = true;
+float gfEmissiveBoost = 2.0f;
 
 static bool initialised;
 static uint32 frameCounter;
@@ -264,6 +265,7 @@ readConfigFile(void)
 		else if(sscanf(line, "giexposure=%f", &fval) == 1) gfGIExposure = fval;
 		else if(sscanf(line, "denoise=%d", &ival) == 1) gbDenoise = ival != 0;
 		else if(sscanf(line, "reflections=%d", &ival) == 1) gbReflections = ival != 0;
+		else if(sscanf(line, "emissive=%f", &fval) == 1) gfEmissiveBoost = fval;
 		else if(sscanf(line, "shotframes=%d", &ival) == 1) gnShotFrames = ival;
 		else if(sscanf(line, "tp=%f,%f,%f", &gTeleport[0], &gTeleport[1], &gTeleport[2]) == 3) gWantTeleport = true;
 		else if(sscanf(line, "hour=%d", &ival) == 1) gnForceHour = ival;
@@ -583,6 +585,7 @@ AddDebugMenuEntries(void)
 	DebugMenuAddVar("RTGI", "GI exposure", &gfGIExposure, nil, 0.1f, 0.1f, 5.0f);
 	DebugMenuAddVarBool8("RTGI", "GI denoise", (int8_t*)&gbDenoise, nil);
 	DebugMenuAddVarBool8("RTGI", "RT reflections", (int8_t*)&gbReflections, nil);
+	DebugMenuAddVar("RTGI", "Emissive boost", &gfEmissiveBoost, nil, 0.25f, 0.0f, 8.0f);
 	DebugMenuAddVar("RTGI", "AO strength", &gfAOStrength, nil, 0.05f, 0.0f, 1.0f);
 	DebugMenuAddVar("RTGI", "AO radius", &gfAORadius, nil, 0.5f, 0.5f, 10.0f);
 	DebugMenuAddVar("RTGI", "AO rays", &gnAORays, nil, 1, 1, 8, nil);

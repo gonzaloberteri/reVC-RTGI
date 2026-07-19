@@ -199,7 +199,7 @@ BlasBeginFrame(void)
 // --- build --------------------------------------------------------------------
 
 BlasEntry*
-BlasGetOrBuild(rw::Geometry *geo, VkCommandBuffer cmd)
+BlasGetOrBuild(rw::Geometry *geo, VkCommandBuffer cmd, float emissiveScale)
 {
 	auto it = gBlasMap.find(geo);
 	if(it != gBlasMap.end())
@@ -328,7 +328,15 @@ BlasGetOrBuild(rw::Geometry *geo, VkCommandBuffer cmd)
 		rec.vtxAddr = e->vtxBuf.addr;
 		rec.idxAddr = e->idxBuf.addr + matOffset[m]*3*sizeof(uint32_t);
 		rec.albedo = materialAlbedo(m < geo->matList.numMaterials ? geo->matList.materials[m] : nil);
-		rec.pad = 0;
+		// night-model materials emit their own (mean) color scaled
+		if(emissiveScale > 0.0f){
+			uint32_t a = rec.albedo;
+			uint32_t r = (uint32_t)((a & 0xFF) * emissiveScale); if(r > 255) r = 255;
+			uint32_t g = (uint32_t)(((a >> 8) & 0xFF) * emissiveScale); if(g > 255) g = 255;
+			uint32_t b = (uint32_t)(((a >> 16) & 0xFF) * emissiveScale); if(b > 255) b = 255;
+			rec.emissive = r | (g << 8) | (b << 16);
+		}else
+			rec.emissive = 0;
 	}
 	e->numRanges = numRanges;
 	gRecordsDirty = true;

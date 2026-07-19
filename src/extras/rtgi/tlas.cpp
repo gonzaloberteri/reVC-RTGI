@@ -15,6 +15,7 @@
 #include "Entity.h"
 #include "Game.h"
 #include "Camera.h"
+#include "ModelInfo.h"
 
 namespace RayTracedGI {
 
@@ -103,7 +104,7 @@ pedSlotInit(PedSlot *s)
 	rec.vtxAddr = s->vtxBuf.addr;
 	rec.idxAddr = s->idxBuf.addr;
 	rec.albedo = 0xFF707070u;	// generic clothing gray for GI bounces
-	rec.pad = 0;
+	rec.emissive = 0;
 	s->record = BlasAllocRecord(rec);
 	if(s->record == UINT32_MAX)
 		return false;
@@ -247,7 +248,7 @@ matrixToVk(VkTransformMatrixKHR *dst, rw::Matrix *m)
 }
 
 static void
-emitAtomic(rw::Atomic *atomic, VkCommandBuffer cmd, uint8_t mask)
+emitAtomic(rw::Atomic *atomic, VkCommandBuffer cmd, uint8_t mask, float emissiveScale = 0.0f)
 {
 	if(gNumInstances >= MAX_INSTANCES)
 		return;
@@ -257,7 +258,7 @@ emitAtomic(rw::Atomic *atomic, VkCommandBuffer cmd, uint8_t mask)
 	if(geo == nil)
 		return;
 
-	BlasEntry *blas = BlasGetOrBuild(geo, cmd);
+	BlasEntry *blas = BlasGetOrBuild(geo, cmd, emissiveScale);
 	if(blas == nil)
 		return;	// over build budget this frame; entity pops in later
 
@@ -335,12 +336,23 @@ emitEntity(CEntity *e, VkCommandBuffer cmd)
 	// the world's baked lighting)
 	uint8_t mask = e->IsVehicle() ? MASK_VEHICLES : MASK_STATIC;
 
+	// night-timed models (lit windows, neon) emit their material color into
+	// the GI bounce; they only enter the TLAS while the game has them
+	// visible, so no hour check is needed here
+	float emissiveScale = 0.0f;
+	CBaseModelInfo *mi = CModelInfo::GetModelInfo(e->GetModelIndex());
+	if(mi && mi->GetModelType() == MITYPE_TIME){
+		CTimeModelInfo *tmi = (CTimeModelInfo*)mi;
+		if(tmi->GetTimeOn() > tmi->GetTimeOff())	// on-window spans midnight
+			emissiveScale = 1.0f;
+	}
+
 	if(RwObjectGetType(e->m_rwObject) == rpATOMIC)
-		emitAtomic((rw::Atomic*)e->m_rwObject, cmd, mask);
+		emitAtomic((rw::Atomic*)e->m_rwObject, cmd, mask, emissiveScale);
 	else{
 		rw::Clump *clump = (rw::Clump*)e->m_rwObject;
 		FORLIST(lnk, clump->atomics)
-			emitAtomic(rw::Atomic::fromClump(lnk), cmd, mask);
+			emitAtomic(rw::Atomic::fromClump(lnk), cmd, mask, emissiveScale);
 	}
 }
 

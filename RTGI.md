@@ -20,6 +20,9 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
 - **Sun/moon shadows** — vehicles and peds cast accurate ray traced shadows
   (replaces their blob shadows); world sun light stays baked, as shipped
 - **Point lights** — streetlights/headlights feed the GI bounce (NEE)
+- **Emissive night models** — lit windows and neon (VC's timed night
+  models) emit their material color into the GI bounce and into wet-road/
+  paint reflections; `emissive=F` config / debug-menu boost knob
 - **Reflections** — wet roads mirror the actual scene when it rains, with a
   physically-shaped Fresnel curve (faint sheen straight down, mirror at
   grazing); per-surface reflectivity rides in G-buffer normal.w — vehicles

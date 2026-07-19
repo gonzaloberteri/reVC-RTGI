@@ -28,7 +28,7 @@ struct GeomRecord
 	VkDeviceAddress vtxAddr;
 	VkDeviceAddress idxAddr;	// start of this range's indices
 	uint32_t albedo;		// RGBA8: material color x mean texture color
-	uint32_t pad;
+	uint32_t emissive;		// RGBA8 emitted color (night windows/neon); 0 = none
 };
 
 // register the librw geometry-destructor plugin. Call once, before game
@@ -45,7 +45,9 @@ void BlasBeginFrame(void);
 // look up the BLAS for a geometry; if none exists and the build budget
 // allows, records a build into cmd and returns the (buildable) entry.
 // Returns nil when over budget or the geometry is unsuitable.
-BlasEntry *BlasGetOrBuild(rw::Geometry *geo, VkCommandBuffer cmd);
+// emissiveScale > 0 marks the geometry's materials as light emitters in the
+// GI bounce (night-model windows and neon), using their albedo as the color.
+BlasEntry *BlasGetOrBuild(rw::Geometry *geo, VkCommandBuffer cmd, float emissiveScale = 0.0f);
 
 // upload the geometry record table if it changed; returns the SSBO
 GpuBuffer *BlasRecordBuffer(void);

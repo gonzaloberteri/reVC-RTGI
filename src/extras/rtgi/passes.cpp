@@ -16,6 +16,7 @@
 #include "Timecycle.h"
 #include "PointLights.h"
 #include "Weather.h"
+#include "rtgi.h"
 
 #include "shaders/obj/primary_comp.inc"
 #include "shaders/obj/ao_comp.inc"
@@ -789,6 +790,7 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 	gpc.sunColor[0] = CTimeCycle::GetDirectionalRed();
 	gpc.sunColor[1] = CTimeCycle::GetDirectionalGreen();
 	gpc.sunColor[2] = CTimeCycle::GetDirectionalBlue();
+	gpc.sunColor[3] = gfEmissiveBoost;	// night windows/neon
 	gpc.skyTop[0] = CTimeCycle::GetSkyTopRed()/255.0f;
 	gpc.skyTop[1] = CTimeCycle::GetSkyTopGreen()/255.0f;
 	gpc.skyTop[2] = CTimeCycle::GetSkyTopBlue()/255.0f;
@@ -908,6 +910,7 @@ PassesTraceReflections(VkCommandBuffer cmd, uint32_t frame)
 	pc.sunColor[0] = CTimeCycle::GetDirectionalRed();
 	pc.sunColor[1] = CTimeCycle::GetDirectionalGreen();
 	pc.sunColor[2] = CTimeCycle::GetDirectionalBlue();
+	pc.sunColor[3] = gfEmissiveBoost;	// night windows/neon
 	pc.skyTop[0] = CTimeCycle::GetSkyTopRed()/255.0f;
 	pc.skyTop[1] = CTimeCycle::GetSkyTopGreen()/255.0f;
 	pc.skyTop[2] = CTimeCycle::GetSkyTopBlue()/255.0f;
