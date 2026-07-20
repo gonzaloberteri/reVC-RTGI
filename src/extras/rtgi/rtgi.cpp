@@ -141,6 +141,8 @@ timestamp(VkCommandBuffer cmd, int which)
 // so automated runs read these instead.
 static int32 gnShotFrames;
 
+static void readConfigFile(void);
+
 // dev-harness state changes (teleport, clock/weather pinning) tick on their
 // own counter so vanilla (enabled=0) comparison runs land in the same scene
 static void
@@ -149,7 +151,27 @@ devHarnessTick(void)
 	static uint32 tick;
 	tick++;
 
-	if(gWantTeleport && tick == 150){
+	// hot-reload: pick up rtgi_config.txt edits mid-run (mtime poll). Lets
+	// automated captures arm shotframes only after the scene has settled —
+	// dense glReadPixels dumps during load/teleport livelock the pipeline.
+	if((tick % 30) == 0){
+		static FILETIME appliedMtime;
+		static bool haveMtime;
+		WIN32_FILE_ATTRIBUTE_DATA fad;
+		if(GetFileAttributesExA("rtgi_config.txt", GetFileExInfoStandard, &fad)){
+			if(!haveMtime){
+				// boot-time apply already happened in Initialise
+				appliedMtime = fad.ftLastWriteTime;
+				haveMtime = true;
+			}else if(CompareFileTime(&fad.ftLastWriteTime, &appliedMtime) != 0){
+				appliedMtime = fad.ftLastWriteTime;
+				readConfigFile();
+				RtgiLog("RTGI: config file re-applied (hot-reload)\n");
+			}
+		}
+	}
+
+	if(gWantTeleport && tick >= 150){
 		CPlayerPed *player = FindPlayerPed();
 		if(player){
 			// main map by default; "area=N" targets an interior instead
@@ -179,9 +201,11 @@ devHarnessTick(void)
 		CClock::GetHoursRef() = gnForceHour;
 		CClock::GetMinutesRef() = 0;
 	}
-	if(gnForceWeather >= 0 && tick == 160){
+	static int32 appliedWeather = -1;
+	if(gnForceWeather >= 0 && tick >= 160 && gnForceWeather != appliedWeather){
 		CWeather::ForceWeatherNow((int16)gnForceWeather);
 		RtgiLog("RTGI: forced weather %d\n", gnForceWeather);
+		appliedWeather = gnForceWeather;
 	}
 }
 

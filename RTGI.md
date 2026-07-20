@@ -99,6 +99,14 @@ behind), `area=N` (interior for the teleport, eAreaName in Game.h),
 number (1-8) to auto-load and `rtgi_window.txt` ("W H") forcing a small
 window for background runs.
 
+The config file is **hot-reloaded**: edits are picked up mid-run (mtime
+polled every 30 frames). Re-applying is idempotent for unchanged values;
+a `tp=` line re-teleports on every reload. Capture scripts use this to
+arm `shotframes` only after the scene has settled — dense `glReadPixels`
+dumps during the load/teleport phase can livelock the frame loop, so
+boot with `shotframes=0` and switch it on once loaded (see
+`docs/comparisons/capture.ps1`).
+
 Photo mode (`photo=1` / debug menu): while the camera holds still the GI
 accumulates a true average (up to 4096 spp, denoiser bypassed, 90%
 second-bounce probability) for clean reference shots; any camera motion
