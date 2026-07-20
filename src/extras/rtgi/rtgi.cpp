@@ -30,6 +30,7 @@
 #include "Weather.h"
 #include "Camera.h"
 #include "CutsceneMgr.h"
+#include "Explosion.h"
 
 namespace RayTracedGI {
 
@@ -95,6 +96,10 @@ static float gCutsceneOfs[3];
 static bool gWantCutscene;
 static bool gCutsceneStarted;
 static bool gbCutsceneLoop;
+// config "explode=x,y,z": detonate a grenade-type explosion there every
+// ~5 s once settled — verifies transient combat lights feed the GI
+static float gExplodePos[3];
+static bool gWantExplosions;
 // a VK submit happened this frame and GL must signal it back, regardless of
 // what the debug menu did to the toggles in between
 static bool gFrameSubmitted;
@@ -238,6 +243,14 @@ devHarnessTick(void)
 	if(gCutsceneStarted && gbCutsceneLoop && CCutsceneMgr::HasLoaded() &&
 	   CCutsceneMgr::HasCutsceneFinished())
 		CCutsceneMgr::SetupCutsceneToStart();
+
+	// periodic scripted explosion for combat-light verification
+	if(gWantExplosions && tick >= 300 && (tick % 150) == 0){
+		CExplosion::AddExplosion(nil, nil, EXPLOSION_GRENADE,
+			CVector(gExplodePos[0], gExplodePos[1], gExplodePos[2]), 0);
+		RtgiLog("RTGI: dev explosion at %.0f %.0f %.0f\n",
+			gExplodePos[0], gExplodePos[1], gExplodePos[2]);
+	}
 }
 
 static void
@@ -407,6 +420,8 @@ readConfigFile(void)
 		else if(sscanf(line, "cutscene=%11[^,\n],%f,%f,%f", gCutsceneName,
 		   &gCutsceneOfs[0], &gCutsceneOfs[1], &gCutsceneOfs[2]) == 4) gWantCutscene = true;
 		else if(sscanf(line, "cutloop=%d", &ival) == 1) gbCutsceneLoop = ival != 0;
+		else if(sscanf(line, "explode=%f,%f,%f", &gExplodePos[0], &gExplodePos[1], &gExplodePos[2]) == 3)
+			gWantExplosions = true;
 		else if(sscanf(line, "area=%d", &ival) == 1) gnForceArea = ival;
 		else if(sscanf(line, "hour=%d", &ival) == 1) gnForceHour = ival;
 		else if(sscanf(line, "weather=%d", &ival) == 1) gnForceWeather = ival;
