@@ -23,13 +23,37 @@ cars. Regenerate the whole set deterministically with
 [`docs/comparisons/capture.ps1`](docs/comparisons/capture.ps1) (see
 [docs/comparisons](docs/comparisons/README.md)).
 
-| | Raster (original, still) | Ray traced (live) |
-|---|---|---|
-| **Rain, Ocean Drive** — wet asphalt mirrors palms, buildings and passing traffic | ![](docs/comparisons/rain_raster.png) | ![](docs/comparisons/rain_rtgi.gif) |
-| **Night, Ocean View neon** — emissive GI washes the street | ![](docs/comparisons/night_raster.png) | ![](docs/comparisons/night_rtgi.gif) |
-| **Noon, Ocean Drive** — daylight AO + sky GI | ![](docs/comparisons/noon_raster.png) | ![](docs/comparisons/noon_rtgi.gif) |
-| **Golden sunset, beach → skyline** — low-sun bounce | ![](docs/comparisons/sunset_raster.png) | ![](docs/comparisons/sunset_rtgi.gif) |
-| **Dawn, lighthouse channel** — sea reflections | ![](docs/comparisons/dawn_raster.png) | ![](docs/comparisons/dawn_rtgi.gif) |
+<table>
+  <tr>
+    <th width="50%">Raster (original, still)</th>
+    <th width="50%">Ray traced (live)</th>
+  </tr>
+  <tr><td colspan="2"><b>Rain, Ocean Drive</b> — wet asphalt mirrors palms, buildings and passing traffic</td></tr>
+  <tr>
+    <td><img src="docs/comparisons/rain_raster.png" width="435"></td>
+    <td><img src="docs/comparisons/rain_rtgi.gif" width="435"></td>
+  </tr>
+  <tr><td colspan="2"><b>Night, Ocean View neon</b> — emissive GI washes the street</td></tr>
+  <tr>
+    <td><img src="docs/comparisons/night_raster.png" width="435"></td>
+    <td><img src="docs/comparisons/night_rtgi.gif" width="435"></td>
+  </tr>
+  <tr><td colspan="2"><b>Noon, Ocean Drive</b> — daylight AO + sky GI</td></tr>
+  <tr>
+    <td><img src="docs/comparisons/noon_raster.png" width="435"></td>
+    <td><img src="docs/comparisons/noon_rtgi.gif" width="435"></td>
+  </tr>
+  <tr><td colspan="2"><b>Golden sunset, beach → skyline</b> — low-sun bounce</td></tr>
+  <tr>
+    <td><img src="docs/comparisons/sunset_raster.png" width="435"></td>
+    <td><img src="docs/comparisons/sunset_rtgi.gif" width="435"></td>
+  </tr>
+  <tr><td colspan="2"><b>Dawn, lighthouse channel</b> — sea reflections</td></tr>
+  <tr>
+    <td><img src="docs/comparisons/dawn_raster.png" width="435"></td>
+    <td><img src="docs/comparisons/dawn_rtgi.gif" width="435"></td>
+  </tr>
+</table>
 
 ## Requirements
 
