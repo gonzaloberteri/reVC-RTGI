@@ -17,6 +17,9 @@
 #include "main.h"
 #include "soundlist.h"
 #include "SurfaceTable.h"
+#ifdef RTGI
+#include "extras/rtgi/gbuffer.h"
+#endif
 
 
 uint32 CGlass::NumGlassEntities;
@@ -609,16 +612,77 @@ CGlass::RenderReflectionPolys(void)
 
 		LittleTest();
 
+#ifdef RTGI
+		// the ray traced mirror replaces the sliding fake-reflection
+		// texture on the same pane quads (vertex alpha keeps the fade)
+		bool rtMirror = RayTracedGI::GlassMirrorBegin();
+#endif
 		if ( RwIm3DTransform(&TempBufferRenderVertices[TEMPBUFFERVERTREFLECTIONOFFSET], TempBufferVerticesStoredReflection - TEMPBUFFERVERTREFLECTIONOFFSET, nil, rwIM3D_VERTEXUV) )
 		{
 			RwIm3DRenderIndexedPrimitive(rwPRIMTYPETRILIST, &TempBufferRenderIndexList[TEMPBUFFERINDEXREFLECTIONOFFSET], TempBufferIndicesStoredReflection - TEMPBUFFERINDEXREFLECTIONOFFSET);
 			RwIm3DEnd();
 		}
+#ifdef RTGI
+		if ( rtMirror )
+			RayTracedGI::GlassMirrorEnd();
+#endif
 
 		TempBufferIndicesStoredReflection  = TEMPBUFFERINDEXREFLECTIONOFFSET;
 		TempBufferVerticesStoredReflection = TEMPBUFFERVERTREFLECTIONOFFSET;
 	}
 }
+
+#ifdef RTGI
+// G-buffer prepass companion to RenderEntityInGlass: the code-glass panes
+// are invisible entities (bIsVisible = false) whose visual lives entirely
+// in CGlass, so the world G-buffer walk never marks them as glass. Emit
+// the same collision-model quads here; the caller has the G-buffer shader
+// bound with the glass marker (normal.w = 3), and the reflection pass then
+// computes the Fresnel mirror GlassMirrorBegin composites back on top.
+int32
+CGlass::RenderForRTGIGbuffer(void)
+{
+	int32 drawn = 0;
+	for ( uint32 i = 0; i < NumGlassEntities; i++ )
+	{
+		CObject *object = (CObject *)apEntitiesToBeRendered[i];
+		if ( object->bGlassBroken )
+			continue;
+		float distToCamera = (TheCamera.GetPosition() - object->GetPosition()).Magnitude();
+		if ( distToCamera > 40.0f )	// matches RenderEntityInGlass
+			continue;
+		CColModel *col = object->GetColModel();
+		if ( col == nil || col->numTriangles < 2 )
+			continue;
+
+		CVector v[4];
+		v[0] = object->GetMatrix() * col->vertices[0].Get();
+		v[1] = object->GetMatrix() * col->vertices[1].Get();
+		v[2] = object->GetMatrix() * col->vertices[2].Get();
+		v[3] = object->GetMatrix() * col->vertices[3].Get();
+
+		RwIm3DVertex verts[4];
+		for ( int32 j = 0; j < 4; j++ )
+		{
+			RwIm3DVertexSetRGBA(&verts[j], 255, 255, 255, 255);
+			RwIm3DVertexSetU   (&verts[j], 0.0f);
+			RwIm3DVertexSetV   (&verts[j], 0.0f);
+			RwIm3DVertexSetPos (&verts[j], v[j].x, v[j].y, v[j].z);
+		}
+		RwImVertexIndex idx[6];
+		idx[0] = col->triangles[0].a; idx[1] = col->triangles[0].b; idx[2] = col->triangles[0].c;
+		idx[3] = col->triangles[1].a; idx[4] = col->triangles[1].b; idx[5] = col->triangles[1].c;
+
+		if ( RwIm3DTransform(verts, 4, nil, rwIM3D_VERTEXUV) )
+		{
+			RwIm3DRenderIndexedPrimitive(rwPRIMTYPETRILIST, idx, 6);
+			RwIm3DEnd();
+			drawn++;
+		}
+	}
+	return drawn;
+}
+#endif
 
 void
 CGlass::WindowRespondsToCollision(CEntity *entity, float amount, CVector speed, CVector point, bool explosion)

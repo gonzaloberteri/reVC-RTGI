@@ -21,11 +21,13 @@
 #include "World.h"
 #include "Timecycle.h"
 #include "ModelInfo.h"
+#include "ModelIndices.h"
 #include "WaterLevel.h"
 #include "Weather.h"
 #include "Timer.h"
 #include "Camera.h"
 #include "VisibilityPlugins.h"
+#include "Glass.h"
 
 namespace RayTracedGI {
 
@@ -37,6 +39,7 @@ static rw::gl3::Shader *gWorldShader;
 static rw::gl3::Shader *gVehicleShader;
 static rw::gl3::Shader *gSkinShader;
 static rw::gl3::Shader *gWaterShader;
+static rw::gl3::Shader *gGlassMirrorShader;
 static int gWidth, gHeight;
 
 // true while the sea is being re-rendered into the G-buffer; WaterLevel
@@ -155,6 +158,16 @@ GbufferInit(int width, int height)
 	if(gWaterShader == nil)
 		return false;
 	}
+	{
+	// breakable-glass mirror: same im3d-compatible vertex path as water
+#include "shaders/obj/rtgiWater_vert.inc"
+#include "shaders/obj/rtgiGlassMirror_frag.inc"
+	const char *vs[] = { shaderDecl, header_vert_src, rtgiWater_vert_src, nil };
+	const char *fs[] = { shaderDecl, header_frag_src, rtgiGlassMirror_frag_src, nil };
+	gGlassMirrorShader = Shader::create(vs, fs);
+	if(gGlassMirrorShader == nil)
+		return false;
+	}
 
 	glGenRenderbuffers(1, &gDepthRbo);
 	glBindRenderbuffer(GL_RENDERBUFFER, gDepthRbo);
@@ -243,7 +256,8 @@ AtomicIsVehicleLod(rw::Atomic *atomic)
 }
 
 static void
-gbufDrawAtomic(rw::Atomic *atomic, float reflW, float glassReflW, bool envAsGlass)
+gbufDrawAtomic(rw::Atomic *atomic, float reflW, float glassReflW, bool envAsGlass,
+	bool forceGlass = false)
 {
 	using namespace rw::gl3;
 
@@ -286,8 +300,13 @@ gbufDrawAtomic(rw::Atomic *atomic, float reflW, float glassReflW, bool envAsGlas
 			// translucent meshes are REAL glass panes (vehicle
 			// windows, mall storefronts, bar fronts, breakable
 			// shop glass) — baked facade "window" textures are
-			// opaque and stay untouched
-			if(glassReflW <= 0.0f || !meshIsGlass(inst))
+			// opaque and stay untouched. Models the game itself
+			// flags as (breakable) glass are panes even when their
+			// translucency lives in the texture/vertex alpha rather
+			// than the material color (the mall shop windows —
+			// ml_gapwindows/recordwin/jewelwin — are artist glass
+			// with material alpha 255)
+			if(glassReflW <= 0.0f || !(meshIsGlass(inst) || forceGlass))
 				continue;
 			want = glassReflW;
 			gEnvGlassMeshes++;
@@ -337,7 +356,7 @@ GbufferRender(void)
 		// 3 = glass. Roads use the game's own per-model wet-reflection
 		// flag; other surfaces get a light sheen; peds never reflect.
 		float reflW, glassReflW = 0.0f;
-		bool envAsGlass = false;
+		bool envAsGlass = false, forceGlass = false;
 		if(e->IsVehicle()){
 			reflW = -0.35f;
 			if(gbGlassRefl && gbReflections)
@@ -356,16 +375,35 @@ GbufferRender(void)
 			// must not flash into a mirror mid-fade
 			if(gbGlassRefl && gbReflections && !e->bDistanceFade)
 				glassReflW = 3.0f;
+			// breakable (artist-)glass models: the game itself says
+			// these are panes; their translucency often rides in the
+			// texture alpha with material alpha 255
+			forceGlass = IsGlass(e->GetModelIndex());
 			envAsGlass = true;
 		}
 
 		if(RwObjectGetType(e->m_rwObject) == rpATOMIC)
-			gbufDrawAtomic((rw::Atomic*)e->m_rwObject, reflW, glassReflW, envAsGlass);
+			gbufDrawAtomic((rw::Atomic*)e->m_rwObject, reflW, glassReflW, envAsGlass, forceGlass);
 		else{
 			rw::Clump *clump = (rw::Clump*)e->m_rwObject;
 			FORLIST(lnk, clump->atomics)
-				gbufDrawAtomic(rw::Atomic::fromClump(lnk), reflW, glassReflW, envAsGlass);
+				gbufDrawAtomic(rw::Atomic::fromClump(lnk), reflW, glassReflW, envAsGlass, forceGlass);
 		}
+	}
+
+	// breakable (code-)glass panes: invisible entities whose visual lives
+	// entirely in CGlass — emit their quads with the glass marker so the
+	// reflection pass computes the Fresnel mirror GlassMirrorBegin
+	// composites back over the pane (face normals come from the G-buffer
+	// frag's derivatives, so plain position-only im3d quads suffice)
+	if(gbGlassRefl && gbReflections){
+		gGbufShader->use();
+		float glassParams[4] = { 3.0f, 0.0f, 0.0f, 0.0f };
+		glUniform4fv(U(u_gbParams), 1, glassParams);
+		im3dOverrideShader = gGbufShader;
+		rw::SetRenderState(rw::VERTEXALPHA, FALSE);
+		gEnvGlassMeshes += CGlass::RenderForRTGIGbuffer();
+		im3dOverrideShader = nil;
 	}
 
 	// sea surface: re-render the water through the im3d override so the
@@ -696,6 +734,36 @@ WaterRenderBegin(void)
 
 void
 WaterRenderEnd(void)
+{
+	rw::gl3::im3dOverrideShader = nil;
+}
+
+// breakable (code-)glass panes: CGlass draws their visible surface as a
+// sliding fake-reflection quad — swap that draw for the ray traced mirror
+// the reflection pass computed at these pixels (the G-buffer prepass
+// marked the pane quads as glass, see GbufferRender)
+bool
+GlassMirrorBegin(void)
+{
+	using namespace rw::gl3;
+
+	if(!gbRayTracedGI || !gbAOEnable || !gbReflections || !gbGlassRefl ||
+	   gGlassMirrorShader == nil)
+		return false;
+
+	gGlassMirrorShader->use();
+	glActiveTexture(GL_TEXTURE5);
+	glBindTexture(GL_TEXTURE_2D, gInterop.reflOutput.glTexture);
+	glActiveTexture(GL_TEXTURE0);
+	glUniform1i(U(u_reflTex), 5);
+	float params[4] = { 0.0f, 1.0f/gWidth, 1.0f/gHeight, 0.0f };
+	glUniform4fv(U(u_rtgiParams), 1, params);
+	im3dOverrideShader = gGlassMirrorShader;
+	return true;
+}
+
+void
+GlassMirrorEnd(void)
 {
 	rw::gl3::im3dOverrideShader = nil;
 }

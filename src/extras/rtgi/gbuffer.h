@@ -55,6 +55,12 @@ bool RenderWaterAtomic(rw::Atomic *atomic);
 // true while GbufferRender re-renders the sea into the G-buffer
 extern bool gbWaterGbufPass;
 
+// breakable (code-)glass panes: swap CGlass's sliding fake-reflection quad
+// for the ray traced mirror. Begin returns false when RTGI/glassrefl is
+// off (caller draws vanilla).
+bool GlassMirrorBegin(void);
+void GlassMirrorEnd(void);
+
 }
 
 #endif

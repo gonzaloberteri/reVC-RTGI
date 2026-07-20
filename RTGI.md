@@ -89,7 +89,27 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
   (VC world models also carry no matFX env maps; both signals dead ends,
   the material-translucency test is the real one). Glass-marked mesh
   count rides the telemetry line; `dumptex=1` logs texture names (dev)
-- **Interior light shafts** — inside interiors (area != 0, sun up) a
+- **Breakable glass panes** — two families, per the game's own IDE flags:
+  *Artist glass* (flag 0x400 — the mall shop windows: ml_gapwindows,
+  ml_recordwin, ml_jewelwin, ml_coffwin, the bikeshop fronts; these are
+  the panes a player actually shatters) stays a visible atomic through the
+  normal world pipe, but its translucency lives in the TEXTURE alpha with
+  material alpha 255, so the meshIsGlass material test skipped it — the
+  G-buffer walk now forces the glass marker for meshes of IsGlass-flagged
+  models (`forceGlass` in gbufDrawAtomic), and the world composite mirrors
+  them like any pane. *Code glass* (flag 0x200 — rare: police-station and
+  downtown panes, mostly debug/mission placements, not normally
+  player-reachable) is an invisible entity whose visual is a sliding
+  fake-reflection quad CGlass draws from the collision model; the G-buffer
+  prepass emits the same collision quads with the glass marker
+  (`CGlass::RenderForRTGIGbuffer`, position-only im3d — face normals come
+  from the G-buffer frag's derivatives) and CGlass's reflection-quad draw
+  swaps the fake texture for the RT mirror (`GlassMirrorBegin/End` im3d
+  override, `rtgiGlassMirror.frag`: reflection buffer by fragcoord,
+  Fresnel from refl.a, vanilla 30-40 m fade via vertex alpha). Cracked
+  panes keep the crack overlay; broken panes and falling shards stay
+  vanilla. Pane counts ride the glass-mesh telemetry; `glassrefl=` gates
+  everything
   half-res pass marches the view ray (8 jittered steps) tracing sun
   visibility per step; interiors are sealed shells, so panes textured
   with the flat sky fill ("skyblue") are marked as SUN PORTALS in the

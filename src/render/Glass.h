@@ -48,6 +48,13 @@ public:
 	static void RenderHiLightPolys(void);
 	static void RenderShatteredPolys(void);
 	static void RenderReflectionPolys(void);
+#ifdef RTGI
+	// G-buffer prepass: emit the unbroken pane quads so the reflection
+	// pass can mark them as glass (code-glass entities are invisible and
+	// render only through CGlass, bypassing the world G-buffer path).
+	// Returns the number of panes drawn (telemetry).
+	static int32 RenderForRTGIGbuffer(void);
+#endif
 	static void WindowRespondsToCollision(CEntity *entity, float amount, CVector speed, CVector point, bool explosion);
 	static void WindowRespondsToSoftCollision(CEntity *entity, float amount);
 	static void WasGlassHitByBullet(CEntity *entity, CVector point);
