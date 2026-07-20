@@ -1,0 +1,118 @@
+#version 460
+
+// Temporal + spatial filter for the reflection buffer. Reflections carry no
+// correct motion vectors (the virtual image moves with parallax), so history
+// is reprojected by surface motion and then clamped to the mean +/- sigma of
+// the current 3x3 neighborhood — the clamp rejects stale history under camera
+// motion while letting stochastic dither (45% foliage coverage, glass) and
+// paint sparkle accumulate away when the view is stable. Young history also
+// leans on a depth/normal-weighted 3x3 spatial mean until it converges.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0, rgba16f) uniform image2D reflRaw;	// rgb radiance, a = reflectivity
+layout(binding = 1) uniform sampler2D prevAccum;	// rgb radiance, a = history length
+layout(binding = 2) uniform sampler2D gbDepth;
+layout(binding = 3) uniform sampler2D gbNormal;
+layout(binding = 4, rgba16f) uniform image2D outAccum;
+layout(binding = 5, rgba16f) uniform image2D outShared;	// GL-visible result
+
+layout(push_constant) uniform PC {
+	vec4 camPos;
+	vec4 camRight;	// w = viewWindow.x
+	vec4 camUp;	// w = viewWindow.y
+	vec4 camFwd;
+	vec4 prevCamPos;
+	vec4 prevCamRight;
+	vec4 prevCamUp;
+	vec4 prevCamFwd;
+	uvec2 size;
+	uint frame;
+	uint reset;	// 1 = drop history (no prev cam, scene cut)
+} pc;
+
+void main()
+{
+	uvec2 px = gl_GlobalInvocationID.xy;
+	if(px.x >= pc.size.x || px.y >= pc.size.y)
+		return;
+
+	vec4 raw = imageLoad(reflRaw, ivec2(px));
+	float depth = texelFetch(gbDepth, ivec2(px), 0).r;
+	if(raw.a <= 0.0 || depth <= 0.0){
+		imageStore(outAccum, ivec2(px), vec4(0.0));
+		imageStore(outShared, ivec2(px), vec4(0.0));
+		return;
+	}
+
+	vec3 centerN = texelFetch(gbNormal, ivec2(px), 0).xyz;
+	float nLen = dot(centerN, centerN);
+	centerN = nLen > 0.25 ? normalize(centerN) : vec3(0.0);
+
+	// 3x3 neighborhood: plain moments for the history clamp, edge-aware
+	// weighted mean for the young-history spatial fallback
+	vec3 m1 = vec3(0.0), m2 = vec3(0.0);
+	vec3 spatial = vec3(0.0);
+	float nSamples = 0.0, wSum = 0.0;
+	for(int dy = -1; dy <= 1; dy++)
+	for(int dx = -1; dx <= 1; dx++){
+		ivec2 q = ivec2(px) + ivec2(dx, dy);
+		if(any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, ivec2(pc.size))))
+			continue;
+		vec4 s = imageLoad(reflRaw, q);
+		if(s.a <= 0.0)
+			continue;
+		m1 += s.rgb;
+		m2 += s.rgb*s.rgb;
+		nSamples += 1.0;
+
+		float sd = texelFetch(gbDepth, q, 0).r;
+		vec3 sn = texelFetch(gbNormal, q, 0).xyz;
+		float wd = exp(-abs(sd - depth) / (depth*0.05 + 0.001));
+		float wn = nLen > 0.25 ? pow(max(dot(normalize(sn), centerN), 0.0), 16.0) : 1.0;
+		float w = wd*wn;
+		spatial += s.rgb*w;
+		wSum += w;
+	}
+	m1 /= nSamples;
+	m2 /= nSamples;
+	vec3 sigma = sqrt(max(m2 - m1*m1, 0.0));
+	spatial = wSum > 0.0 ? spatial/wSum : raw.rgb;
+
+	// reproject by surface motion
+	vec3 hist = raw.rgb;
+	float n = 0.0;
+	if(pc.reset == 0u){
+		vec2 uv = (vec2(px) + 0.5) / vec2(pc.size);
+		float u = uv.x*2.0 - 1.0;
+		float v = uv.y*2.0 - 1.0;
+		vec3 viewRay = pc.camFwd.xyz - pc.camRight.xyz*(u*pc.camRight.w) + pc.camUp.xyz*(v*pc.camUp.w);
+		vec3 worldPos = pc.camPos.xyz + viewRay*depth;
+		vec3 d = worldPos - pc.prevCamPos.xyz;
+		float pz = dot(d, pc.prevCamFwd.xyz);
+		if(pz > 0.1){
+			float pxn = -dot(d, pc.prevCamRight.xyz) / (pz * pc.prevCamRight.w);
+			float pyn = dot(d, pc.prevCamUp.xyz) / (pz * pc.prevCamUp.w);
+			vec2 prevUv = vec2(pxn*0.5 + 0.5, pyn*0.5 + 0.5);
+			if(all(greaterThan(prevUv, vec2(0.001))) && all(lessThan(prevUv, vec2(0.999)))){
+				vec4 h = texture(prevAccum, prevUv);
+				if(h.a > 0.0){
+					// clamp to the current neighborhood: stale
+					// (parallax/disoccluded) history gets pulled
+					// to a plausible current value instead of
+					// ghosting
+					hist = clamp(h.rgb, m1 - sigma*1.2, m1 + sigma*1.2);
+					n = h.a;
+				}
+			}
+		}
+	}
+
+	n = min(n + 1.0, 32.0);
+	// fresh pixels lean on the spatial mean; converged ones stay sharp
+	vec3 cur = mix(spatial, raw.rgb, min(n/8.0, 1.0));
+	vec3 result = mix(hist, cur, max(1.0/n, 0.12));
+
+	imageStore(outAccum, ivec2(px), vec4(result, n));
+	imageStore(outShared, ivec2(px), vec4(result, raw.a));
+}

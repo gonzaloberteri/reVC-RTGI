@@ -35,7 +35,12 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
   physically-shaped Fresnel curve (faint sheen straight down, mirror at
   grazing); per-surface reflectivity rides in G-buffer normal.w — vehicles
   encode base paint reflectivity (negated), roads use the game's own
-  per-model wet-reflection flag, other surfaces get a light sheen
+  per-model wet-reflection flag, other surfaces get a light sheen. The
+  buffer is filtered by a dedicated temporal pass (surface-motion
+  reprojection with a 3x3 mean±sigma neighborhood clamp — reflections have
+  no true motion vectors, the clamp rejects parallax ghosting) plus a
+  depth/normal-weighted spatial mean that fades out as history converges;
+  smooths the 45% stochastic foliage/glass dither and paint sparkle
 - **Skinned peds** — CPU-posed every frame into per-ped BLASes so they occlude
   and cast like everything else; peds are also in the G-buffer (skinned
   vertex path) and composite AO/GI/sun shadows in their forward pass
@@ -64,7 +69,7 @@ src/extras/rtgi/
   tlas.*          per-frame TLAS from CWorld sectors + big buildings; interior
                   area masking; per-ped skinning slots
   passes.*        ray query compute passes: AO+shadow, GI, temporal, à-trous,
-                  reflections
+                  reflections + reflection temporal/spatial filter
   shaders/        GLSL -> SPIR-V (.spv.inc committed; SDK only needed to edit)
 ```
 
@@ -90,7 +95,7 @@ AO strength/radius/rays, GI blend/exposure, debug views (RT normals/depth/
 instances, AO, G-buffer, sun visibility, GI, reflections).
 
 `rtgi_config.txt` next to the exe (for automated testing): `view=N`,
-`enabled/ao/gi/gi2/photo/denoise/reflections/sunshadows=0|1`,
+`enabled/ao/gi/gi2/photo/denoise/reflections/reflfilter/sunshadows=0|1`,
 `aostrength/aoradius/giblend/giexposure/emissive=F`, `aorays=N`,
 `shotframes=N` (periodic BMP dumps), `tp=x,y,z[,heading]` (teleport
 after load; heading in degrees, 0 = north, CCW, snaps the camera
@@ -134,7 +139,8 @@ Observations to revisit:
   need cataloguing (hotel = save start; malibu attempt at 489.6,-84.5 was
   not the club floor).
 - Vehicle windshields are non-opaque in the BLAS, so reflections that hit
-  glass dither at 45% coverage.
+  glass dither at 45% coverage (the reflection filter smooths the residue,
+  but glass deserves a deterministic Fresnel treatment — see backlog).
 - Denoiser is now variance-guided; if thin-geometry shimmer persists in
   motion, next steps are variance spatial filtering and a history clamp.
 - GPU timings (native 1440p, 3090): blas/tlas 0.65, ao 1.9, gi 2.6,

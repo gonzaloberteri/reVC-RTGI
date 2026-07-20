@@ -38,6 +38,7 @@ extern float gfGIBlend;		// 0 = flat timecycle ambient, 1 = full GI
 extern float gfGIExposure;
 extern bool gbDenoise;
 extern bool gbReflections;
+extern bool gbReflFilter;	// temporal + spatial filter over the reflection buffer
 extern float gfEmissiveBoost;	// night windows/neon radiance multiplier
 extern bool gbGI2;		// second GI bounce (Russian roulette)
 extern bool gbPhotoMode;	// progressive accumulation while the camera is still

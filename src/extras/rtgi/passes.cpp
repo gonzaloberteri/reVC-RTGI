@@ -27,6 +27,7 @@
 #include "shaders/obj/temporal_comp.inc"
 #include "shaders/obj/atrous_comp.inc"
 #include "shaders/obj/refl_comp.inc"
+#include "shaders/obj/refltemporal_comp.inc"
 
 namespace RayTracedGI {
 
@@ -175,6 +176,34 @@ static VkDescriptorSetLayout gReflSetLayout;
 static VkPipelineLayout gReflPipeLayout;
 static VkPipeline gReflPipeline;
 static VkDescriptorSet gReflDescSet;
+
+// reflection temporal/spatial filter; history is independent of the GI
+// temporal pass so it also works with gi=0
+struct ReflTemporalPushConstants
+{
+	float camPos[4];
+	float camRight[4];
+	float camUp[4];
+	float camFwd[4];
+	float prevCamPos[4];
+	float prevCamRight[4];
+	float prevCamUp[4];
+	float prevCamFwd[4];
+	uint32_t size[2];
+	uint32_t frame;
+	uint32_t reset;
+};
+static VkDescriptorSetLayout gReflTempSetLayout;
+static VkPipelineLayout gReflTempPipeLayout;
+static VkPipeline gReflTempPipeline;
+static VkDescriptorSet gReflTempDescSet;
+static GpuImage gReflRaw;	// rgb radiance, a = reflectivity (pre-filter)
+static GpuImage gReflAccum[2];	// rgb radiance, a = history length
+static int gReflAccumIndex;
+static bool gReflImagesInitialised;
+static float gReflPrevCam[16];
+static bool gReflHavePrevCam;
+
 static int gAccumIndex;
 static bool gGiImagesInitialised;	// UNDEFINED->GENERAL done
 static float gPrevCam[16];		// pos/right/up/fwd with vw in w
@@ -496,6 +525,50 @@ PassesInit(void)
 		return false;
 	}
 
+	// --- reflection temporal/spatial filter ------------------------------
+
+	{
+	VkDescriptorSetLayoutBinding b[6] = {};
+	VkDescriptorType types[6] = {
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// reflRaw
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// prevAccum
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// gbDepth
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// gbNormal
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// outAccum
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// outShared (GL)
+	};
+	for(int i = 0; i < 6; i++){
+		b[i].binding = i;
+		b[i].descriptorType = types[i];
+		b[i].descriptorCount = 1;
+		b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	}
+	VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+	li.bindingCount = 6;
+	li.pBindings = b;
+	if(vkCreateDescriptorSetLayout(gVk.device, &li, nullptr, &gReflTempSetLayout) != VK_SUCCESS)
+		return false;
+	VkPushConstantRange pcr = {};
+	pcr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	pcr.size = sizeof(ReflTemporalPushConstants);
+	VkPipelineLayoutCreateInfo pli = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+	pli.setLayoutCount = 1;
+	pli.pSetLayouts = &gReflTempSetLayout;
+	pli.pushConstantRangeCount = 1;
+	pli.pPushConstantRanges = &pcr;
+	if(vkCreatePipelineLayout(gVk.device, &pli, nullptr, &gReflTempPipeLayout) != VK_SUCCESS)
+		return false;
+	gReflTempPipeline = createComputePipeline(refltemporal_comp_spv, sizeof(refltemporal_comp_spv), gReflTempPipeLayout);
+	if(gReflTempPipeline == VK_NULL_HANDLE)
+		return false;
+	VkDescriptorSetAllocateInfo dsi = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+	dsi.descriptorPool = gDescPool;
+	dsi.descriptorSetCount = 1;
+	dsi.pSetLayouts = &gReflTempSetLayout;
+	if(vkAllocateDescriptorSets(gVk.device, &dsi, &gReflTempDescSet) != VK_SUCCESS)
+		return false;
+	}
+
 	int w = gInterop.giOutput.width, h = gInterop.giOutput.height;
 	VkImageUsageFlags giUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 	if(!ImageCreate(&gGiRaw, w, h, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage) ||
@@ -509,6 +582,12 @@ PassesInit(void)
 	   !ImageCreate(&gAoAccum[0], w, h, VK_FORMAT_R16_SFLOAT, giUsage) ||
 	   !ImageCreate(&gAoAccum[1], w, h, VK_FORMAT_R16_SFLOAT, giUsage) ||
 	   !ImageCreate(&gAtrousScratch, w, h, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage))
+		return false;
+
+	int rw = gInterop.reflOutput.width, rh = gInterop.reflOutput.height;
+	if(!ImageCreate(&gReflRaw, rw, rh, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage) ||
+	   !ImageCreate(&gReflAccum[0], rw, rh, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage) ||
+	   !ImageCreate(&gReflAccum[1], rw, rh, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage))
 		return false;
 
 	// --- a-trous denoiser ------------------------------------------------
@@ -562,6 +641,18 @@ void
 PassesShutdown(void)
 {
 	BufferDestroy(&gLightBuf);
+	ImageDestroy(&gReflRaw);
+	ImageDestroy(&gReflAccum[0]);
+	ImageDestroy(&gReflAccum[1]);
+	if(gReflTempPipeline) vkDestroyPipeline(gVk.device, gReflTempPipeline, nullptr);
+	if(gReflTempPipeLayout) vkDestroyPipelineLayout(gVk.device, gReflTempPipeLayout, nullptr);
+	if(gReflTempSetLayout) vkDestroyDescriptorSetLayout(gVk.device, gReflTempSetLayout, nullptr);
+	gReflTempPipeline = VK_NULL_HANDLE;
+	gReflTempPipeLayout = VK_NULL_HANDLE;
+	gReflTempSetLayout = VK_NULL_HANDLE;
+	gReflAccumIndex = 0;
+	gReflImagesInitialised = false;
+	gReflHavePrevCam = false;
 	if(gReflPipeline) vkDestroyPipeline(gVk.device, gReflPipeline, nullptr);
 	if(gReflPipeLayout) vkDestroyPipelineLayout(gVk.device, gReflPipeLayout, nullptr);
 	if(gReflSetLayout) vkDestroyDescriptorSetLayout(gVk.device, gReflSetLayout, nullptr);
@@ -784,7 +875,7 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 			barriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 		}
 		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			0, 0, nullptr, 0, nullptr, 8, barriers);
+			0, 0, nullptr, 0, nullptr, 11, barriers);
 		gGiImagesInitialised = true;
 		resetHistory = true;
 	}
@@ -1004,15 +1095,36 @@ PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 }
 
 void
-PassesTraceReflections(VkCommandBuffer cmd, uint32_t frame)
+PassesTraceReflections(VkCommandBuffer cmd, uint32_t frame, bool toRaw)
 {
 	int w = gInterop.reflOutput.width, h = gInterop.reflOutput.height;
+
+	// first use of the filter images: layout to GENERAL once (done here, not
+	// with the GI images — reflections can run with gi=0)
+	if(!gReflImagesInitialised){
+		VkImageMemoryBarrier barriers[3] = {};
+		VkImage images[3] = { gReflRaw.image, gReflAccum[0].image, gReflAccum[1].image };
+		for(int i = 0; i < 3; i++){
+			barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barriers[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+			barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barriers[i].image = images[i];
+			barriers[i].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+			barriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		}
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			0, 0, nullptr, 0, nullptr, 3, barriers);
+		gReflImagesInitialised = true;
+	}
 
 	VkAccelerationStructureKHR tlas = TlasHandle();
 	VkWriteDescriptorSetAccelerationStructureKHR asWrite = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
 	asWrite.accelerationStructureCount = 1;
 	asWrite.pAccelerationStructures = &tlas;
-	VkDescriptorImageInfo outInfo = { VK_NULL_HANDLE, gInterop.reflOutput.view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo outInfo = { VK_NULL_HANDLE,
+		toRaw ? gReflRaw.view : gInterop.reflOutput.view, VK_IMAGE_LAYOUT_GENERAL };
 	VkDescriptorImageInfo normalInfo = { gInterop.sampler, gInterop.gbNormal.view, VK_IMAGE_LAYOUT_GENERAL };
 	VkDescriptorImageInfo depthInfo = { gInterop.sampler, gInterop.gbDepth.view, VK_IMAGE_LAYOUT_GENERAL };
 	GpuBuffer *records = BlasRecordBuffer();
@@ -1063,6 +1175,73 @@ PassesTraceReflections(VkCommandBuffer cmd, uint32_t frame)
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gReflPipeLayout, 0, 1, &gReflDescSet, 0, nullptr);
 	vkCmdPushConstants(cmd, gReflPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
 	vkCmdDispatch(cmd, (w + 7)/8, (h + 7)/8, 1);
+
+	// filter off: the stale accumulation must not be trusted when it comes back
+	if(!toRaw)
+		gReflHavePrevCam = false;
+}
+
+void
+PassesFilterReflections(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
+{
+	int w = gInterop.reflOutput.width, h = gInterop.reflOutput.height;
+	int cur = gReflAccumIndex, prev = 1 - gReflAccumIndex;
+
+	// raw reflections written -> filter reads them
+	VkMemoryBarrier memBarrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+	memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+
+	{
+	VkDescriptorImageInfo rawInfo = { VK_NULL_HANDLE, gReflRaw.view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo prevAccumInfo = { gInterop.sampler, gReflAccum[prev].view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo depthInfo = { gInterop.sampler, gInterop.gbDepth.view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo normalInfo = { gInterop.sampler, gInterop.gbNormal.view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo outAccumInfo = { VK_NULL_HANDLE, gReflAccum[cur].view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo outSharedInfo = { VK_NULL_HANDLE, gInterop.reflOutput.view, VK_IMAGE_LAYOUT_GENERAL };
+
+	VkWriteDescriptorSet writes[6] = {};
+	const VkDescriptorImageInfo *infos[6] = { &rawInfo, &prevAccumInfo, &depthInfo,
+		&normalInfo, &outAccumInfo, &outSharedInfo };
+	VkDescriptorType types[6] = {
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	};
+	for(int i = 0; i < 6; i++){
+		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[i].dstSet = gReflTempDescSet;
+		writes[i].dstBinding = i;
+		writes[i].descriptorCount = 1;
+		writes[i].descriptorType = types[i];
+		writes[i].pImageInfo = infos[i];
+	}
+	vkUpdateDescriptorSets(gVk.device, 6, writes, 0, nullptr);
+	}
+
+	ReflTemporalPushConstants pc = {};
+	fillCamera(pc.camPos, pc.camRight, pc.camUp, pc.camFwd);
+	if(gReflHavePrevCam)
+		memcpy(pc.prevCamPos, gReflPrevCam, sizeof(gReflPrevCam));
+	else
+		resetHistory = true;
+	pc.size[0] = w; pc.size[1] = h;
+	pc.frame = frame;
+	pc.reset = resetHistory ? 1 : 0;
+
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gReflTempPipeline);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gReflTempPipeLayout, 0, 1, &gReflTempDescSet, 0, nullptr);
+	vkCmdPushConstants(cmd, gReflTempPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+	vkCmdDispatch(cmd, (w + 7)/8, (h + 7)/8, 1);
+
+	memcpy(gReflPrevCam, pc.camPos, sizeof(gReflPrevCam));
+	gReflHavePrevCam = true;
+	gReflAccumIndex = prev;
 }
 
 void

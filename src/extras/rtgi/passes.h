@@ -24,8 +24,14 @@ bool PassesTraceGI(VkCommandBuffer cmd, uint32_t frame, bool resetHistory);
 // a-trous spatial filter over the accumulated GI, output into the shared image
 void PassesDenoiseGI(VkCommandBuffer cmd);
 
-// mirror reflections into the shared reflection image
-void PassesTraceReflections(VkCommandBuffer cmd, uint32_t frame);
+// mirror reflections; toRaw routes the output through the temporal/spatial
+// filter's raw image (PassesFilterReflections must run after), otherwise the
+// shared reflection image is written directly
+void PassesTraceReflections(VkCommandBuffer cmd, uint32_t frame, bool toRaw);
+
+// temporal accumulation (neighborhood-clamped) + edge-aware spatial filter
+// over the raw reflections, output into the shared reflection image
+void PassesFilterReflections(VkCommandBuffer cmd, uint32_t frame, bool resetHistory);
 
 // lights fed to the last GI pass (game point lights + headlight cones)
 uint32_t GiLightCount(void);

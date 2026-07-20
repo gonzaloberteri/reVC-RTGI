@@ -62,6 +62,7 @@ float gfGIBlend = 0.6f;
 float gfGIExposure = 1.0f;
 bool gbDenoise = true;
 bool gbReflections = true;
+bool gbReflFilter = true;
 float gfEmissiveBoost = 1.0f;
 bool gbGI2 = true;
 bool gbPhotoMode;
@@ -86,7 +87,7 @@ static bool gFrameSubmitted;
 // GPU pass timing: timestamps written along the frame's command buffer,
 // read back after the frame fence, averaged into the telemetry line
 enum {
-	TS_BEGIN, TS_TLAS, TS_AO, TS_GI, TS_DENOISE, TS_REFL,
+	TS_BEGIN, TS_TLAS, TS_AO, TS_GI, TS_DENOISE, TS_REFL, TS_REFLT,
 	TS_COUNT
 };
 static VkQueryPool gTsPool;
@@ -358,6 +359,7 @@ readConfigFile(void)
 		else if(sscanf(line, "giexposure=%f", &fval) == 1) gfGIExposure = fval;
 		else if(sscanf(line, "denoise=%d", &ival) == 1) gbDenoise = ival != 0;
 		else if(sscanf(line, "reflections=%d", &ival) == 1) gbReflections = ival != 0;
+		else if(sscanf(line, "reflfilter=%d", &ival) == 1) gbReflFilter = ival != 0;
 		else if(sscanf(line, "emissive=%f", &fval) == 1) gfEmissiveBoost = fval;
 		else if(sscanf(line, "gi2=%d", &ival) == 1) gbGI2 = ival != 0;
 		else if(sscanf(line, "photo=%d", &ival) == 1) gbPhotoMode = ival != 0;
@@ -553,8 +555,9 @@ RenderFrame(void)
 				giToGeneral.image = gInterop.giOutput.image;
 				vkCmdPipelineBarrier(gVk.cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 					0, 0, nullptr, 0, nullptr, 1, &giToGeneral);
+				// gResetGIHistory is cleared after the reflection
+				// filter below — it consumes the same flag
 				PassesTraceGI(gVk.cmdBuf, frameCounter, gResetGIHistory);
-				gResetGIHistory = false;
 				if(timing) timestamp(gVk.cmdBuf, TS_GI);
 				// photo mode: the converged average must not be blurred
 				if(gbDenoise && !gbPhotoMode)
@@ -571,9 +574,15 @@ RenderFrame(void)
 				reflToGeneral.image = gInterop.reflOutput.image;
 				vkCmdPipelineBarrier(gVk.cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 					0, 0, nullptr, 0, nullptr, 1, &reflToGeneral);
-				PassesTraceReflections(gVk.cmdBuf, frameCounter);
+				PassesTraceReflections(gVk.cmdBuf, frameCounter, gbReflFilter);
+				if(timing) timestamp(gVk.cmdBuf, TS_REFL);
+				if(gbReflFilter)
+					PassesFilterReflections(gVk.cmdBuf, frameCounter, gResetGIHistory);
+			}else{
+				if(timing) timestamp(gVk.cmdBuf, TS_REFL);
 			}
-			if(timing) timestamp(gVk.cmdBuf, TS_REFL);
+			if(timing) timestamp(gVk.cmdBuf, TS_REFLT);
+			gResetGIHistory = false;
 		}
 
 		VkImageMemoryBarrier afterTrace = toGeneral;
@@ -624,11 +633,11 @@ RenderFrame(void)
 			TlasInstanceCount(), BlasCount(), BlasCompactionSavedMB(), GiLightCount(), GiHeadlightCount(), TexCacheCount(),
 			CTimer::GetIsPaused(), FrontEndMenuManager.m_bMenuActive, CDraw::FadeValue);
 		if(gTsFrames > 0){
-			RtgiLog("RTGI: GPU ms avg over %u frames: blas/tlas %.2f, ao %.2f, gi %.2f, denoise %.2f, refl %.2f\n",
+			RtgiLog("RTGI: GPU ms avg over %u frames: blas/tlas %.2f, ao %.2f, gi %.2f, denoise %.2f, refl %.2f, reflt %.2f\n",
 				gTsFrames,
 				gTsAccumMs[TS_TLAS]/gTsFrames, gTsAccumMs[TS_AO]/gTsFrames,
 				gTsAccumMs[TS_GI]/gTsFrames, gTsAccumMs[TS_DENOISE]/gTsFrames,
-				gTsAccumMs[TS_REFL]/gTsFrames);
+				gTsAccumMs[TS_REFL]/gTsFrames, gTsAccumMs[TS_REFLT]/gTsFrames);
 			memset(gTsAccumMs, 0, sizeof(gTsAccumMs));
 			gTsFrames = 0;
 		}
@@ -759,6 +768,7 @@ AddDebugMenuEntries(void)
 	DebugMenuAddVar("RTGI", "GI exposure", &gfGIExposure, nil, 0.1f, 0.1f, 5.0f);
 	DebugMenuAddVarBool8("RTGI", "GI denoise", (int8_t*)&gbDenoise, nil);
 	DebugMenuAddVarBool8("RTGI", "RT reflections", (int8_t*)&gbReflections, nil);
+	DebugMenuAddVarBool8("RTGI", "Reflection filter", (int8_t*)&gbReflFilter, nil);
 	DebugMenuAddVar("RTGI", "Emissive boost", &gfEmissiveBoost, nil, 0.25f, 0.0f, 8.0f);
 	DebugMenuAddVarBool8("RTGI", "GI second bounce", (int8_t*)&gbGI2, nil);
 	DebugMenuAddVarBool8("RTGI", "Photo mode (accumulate)", (int8_t*)&gbPhotoMode, nil);
