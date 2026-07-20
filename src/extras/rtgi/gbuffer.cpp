@@ -481,11 +481,17 @@ matfxRenderCBHook(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 		gOrigMatfxCB(atomic, header);
 }
 
-// true while the procedural (shader-only) water look is active
+// true while the procedural (shader-only) water look is active. NOT tied
+// to the reflection toggle: the far LOD-sea pipes (world/matFX/gloss
+// strips) only ever needed caustics, and gating the near paths on
+// reflections split the sea in two — procedural in the distance, vanilla
+// textured right around the player (the camera-following mask atomic
+// with its env map never leaves the near field, so the OG look also
+// stuck around at speed)
 bool
 UsingProceduralWater(void)
 {
-	return gbRayTracedGI && gbAOEnable && gbReflections && gbWaterCaustics;
+	return gbRayTracedGI && gbAOEnable && gbWaterCaustics;
 }
 
 // the neo gloss pipe adds the baked water sparkle additively on top of
@@ -660,7 +666,10 @@ waterUploadUniforms(bool atomicPath)
 	// water color); the librw uniform registry (40 slots) is full, so the
 	// water pass reuses slots other passes own
 	CVector camPos = TheCamera.GetPosition();
-	float cam[4] = { camPos.x, camPos.y, camPos.z, atomicPath ? 1.0f : 0.0f };
+	// w flags: +1 atomic path (replace static prelight), +2 reflection
+	// pass off (its buffer is stale and must not mix into the water)
+	float wflags = (atomicPath ? 1.0f : 0.0f) + (gbReflections ? 0.0f : 2.0f);
+	float cam[4] = { camPos.x, camPos.y, camPos.z, wflags };
 	glUniform4fv(U(u_gbParams), 1, cam);
 	float wcol[4] = { CTimeCycle::GetWaterRed()/255.0f, CTimeCycle::GetWaterGreen()/255.0f,
 		CTimeCycle::GetWaterBlue()/255.0f, CTimeCycle::GetWaterAlpha()/255.0f };
@@ -672,7 +681,12 @@ WaterRenderBegin(void)
 {
 	using namespace rw::gl3;
 
-	if(!gbRayTracedGI || !gbAOEnable || !gbReflections || gWaterShader == nil)
+	// engage whenever ANY RTGI water feature is on — with only caustics
+	// (reflections toggled off) the water must still go procedural, or
+	// the near field falls back to vanilla while the far LOD sea stays
+	// shader-only (user-reported split look)
+	if(!gbRayTracedGI || !gbAOEnable || gWaterShader == nil ||
+	   (!gbReflections && !gbWaterCaustics))
 		return;
 
 	gWaterShader->use();
@@ -695,7 +709,8 @@ RenderWaterAtomic(rw::Atomic *atomic)
 {
 	using namespace rw::gl3;
 
-	if(!gbRayTracedGI || !gbAOEnable || !gbReflections || gWaterShader == nil)
+	if(!gbRayTracedGI || !gbAOEnable || gWaterShader == nil ||
+	   (!gbReflections && !gbWaterCaustics))
 		return false;
 
 	rw::Geometry *geo = atomic->geometry;
@@ -705,6 +720,29 @@ RenderWaterAtomic(rw::Atomic *atomic)
 	InstanceDataHeader *header = (InstanceDataHeader*)geo->instData;
 	if(header == nil || header->platform != rw::PLATFORM_GL3)
 		return false;
+
+	// G-buffer prepass: the wavy atomic must land in the attachments as a
+	// SEA surface (the caller has gGbufShader + marker 2 bound) — running
+	// the forward water shader here scribbled water colors into the
+	// normal buffer, so near water lost its sea marker and the reflection
+	// pass ignored it
+	if(gbWaterGbufPass){
+		setWorldMatrix(atomic->getFrame()->getLTM());
+		setupVertexInput(header);
+		InstanceData *inst = header->inst;
+		for(rw::uint32 i = 0; i < header->numMeshes; i++, inst++)
+			drawInst(header, inst);
+		teardownVertexInput(header);
+		return true;
+	}
+
+	// the caller (RenderTransparentWater, PC_WATER build) sets no blend
+	// state of its own — whatever ran before leaks in, and an inherited
+	// opaque/additive state is a classic source of the reported water
+	// z/blend artifacts. Pin the vanilla translucent-water state.
+	rw::SetRenderState(rw::VERTEXALPHA, TRUE);
+	rw::SetRenderState(rw::SRCBLEND, rw::BLENDSRCALPHA);
+	rw::SetRenderState(rw::DESTBLEND, rw::BLENDINVSRCALPHA);
 
 	gWaterShader->use();
 	waterUploadUniforms(true);

@@ -2,10 +2,12 @@ uniform sampler2D tex0;
 uniform sampler2D u_reflTex;
 
 uniform vec4 u_rtgiParams;	// x = time (s), y = 1/width, z = 1/height, w = caustic strength
-// camera position rides in u_gbParams.xyz (w = 1 when v_color must be
-// replaced by u_rtgiGIParams: the wavy/mask ATOMICS carry static daylight
-// prelight, wrong at night); librw's uniform registry (MAX_UNIFORMS 40)
-// is full, so the water pass reuses registered slots
+// camera position rides in u_gbParams.xyz; w encodes two flags:
+// +1 when v_color must be replaced by u_rtgiGIParams (the wavy/mask
+// ATOMICS carry static daylight prelight, wrong at night) and +2 when
+// the RT reflection pass is OFF (its buffer is stale and must not mix
+// in); librw's uniform registry (MAX_UNIFORMS 40) is full, so the water
+// pass reuses registered slots
 uniform vec4 u_gbParams;
 uniform vec4 u_rtgiGIParams;	// timecycle water RGBA (atomic path)
 
@@ -38,6 +40,7 @@ main(void)
 {
 	vec4 tex = texture(tex0, vec2(v_tex0.x, 1.0-v_tex0.y));
 
+	float atomicPath = mod(u_gbParams.w, 2.0);
 	vec4 color;
 	if(u_rtgiParams.w > 0.0){
 		// fully procedural surface: the vanilla water texture, including
@@ -53,7 +56,7 @@ main(void)
 			ca = caustic(v_worldpos.xy, u_rtgiParams.x*0.5 + 23.0) * fade * u_rtgiParams.w;
 		// 0.62 stands in for the mean of the dropped texture so the
 		// procedural sea keeps the vanilla art tone
-		vec4 wcol = mix(v_color, u_rtgiGIParams, u_gbParams.w);
+		vec4 wcol = mix(v_color, u_rtgiGIParams, atomicPath);
 		vec3 base = wcol.rgb*0.62;
 		// the white additive sparkle dims with the base luminance so
 		// night water does not glow
@@ -71,9 +74,12 @@ main(void)
 	}
 
 	// the ray traced sea reflection; a carries the fresnel-shaped strength
-	// the reflection pass computed for the water surface
-	vec4 refl = texture(u_reflTex, gl_FragCoord.xy * u_rtgiParams.yz);
-	color.rgb = mix(color.rgb, refl.rgb, refl.a);
+	// the reflection pass computed for the water surface. Skipped when the
+	// reflection pass is off — the buffer then holds stale frames
+	if(u_gbParams.w < 1.5){
+		vec4 refl = texture(u_reflTex, gl_FragCoord.xy * u_rtgiParams.yz);
+		color.rgb = mix(color.rgb, refl.rgb, refl.a);
+	}
 
 	color.rgb = mix(u_fogColor.rgb, color.rgb, v_fog);
 	DoAlphaTest(color.a);

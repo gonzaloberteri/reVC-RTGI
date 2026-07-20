@@ -18,7 +18,13 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
   (second bounce via 50% Russian roulette), temporal accumulation with
   luminance-moment history, and a variance-guided edge-aware à-trous
   denoiser (SVGF-style); replaces part of the flat timecycle ambient
-  (blend knob preserves art direction)
+  (blend knob preserves art direction). The temporal pass reprojects with
+  camera matrices only (no object motion vectors), so history under a
+  MOVING occluder passes the depth test while still holding its shading —
+  both the GI and the accumulated AO clamp their history to the current
+  frame's 3x3 raw mean ± sigma (GI 2σ, AO 1.5σ; skipped in photo mode and
+  on untraced checkerboard tiles) so fast cars cannot smear their
+  shadow/occlusion into ghost trails
 - **Sun/moon shadows** — vehicles and peds cast accurate ray traced shadows
   (replaces their blob shadows); world sun light stays baked, as shipped.
   At night the moon takes over as caster: fixed southern direction
@@ -47,13 +53,28 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
   smooths the 45% stochastic foliage/glass dither and paint sparkle
 - **Skinned peds** — CPU-posed every frame into per-ped BLASes so they occlude
   and cast like everything else; peds are also in the G-buffer (skinned
-  vertex path) and composite AO/GI/sun shadows in their forward pass
+  vertex path) and composite AO/GI in their forward pass. Peds do NOT
+  receive the RT sun-shadow term on their own bodies: their BLAS sits in
+  the shadow-ray mask, so body pixels self-hit and a hard 1-ray shadow
+  painted uncanny bands on the clothes — vanilla peds are flat
+  directionally lit, and the composite matches that (they still cast onto
+  the ground)
 - **Vehicles** — composite AO/GI and receive ray traced sun shadows; matFX
-  env-map materials sample the RT reflection buffer instead of the env hack
+  env-map materials sample the RT reflection buffer instead of the env hack.
+  The _vlo/_lo LOD shell atomics are skipped in the G-buffer and TLAS walks
+  (their RENDER flag stays set forever — the forward pass distance-gates
+  them inside their render callbacks, and drawing them anyway wrapped every
+  car in a low-poly reflective box; AtomicIsVehicleLod matches the five
+  far-only LOD callbacks by renderCB pointer)
 - **Foliage** — alpha-tested materials (palms, shrubs) build as non-opaque
-  BLAS ranges; every RT pass traverses them stochastically (45% coverage) so
-  canopies cast soft partial shadows/AO instead of solid-quad blobs, and the
-  G-buffer excludes them from the wet-sheen treatment
+  BLAS ranges. The color passes (reflections, GI) commit candidates with
+  probability = the real texture alpha at the hit UV × material alpha
+  (material alpha rides in GeomRecord matColor bits 24-31): leaf cutouts
+  pass through instead of mirroring as black quads, solid leaf texels
+  always block, translucent glass keeps a coverage dither the filters
+  smooth. AO/shadow/volumetric rays keep the cheap flat 45% coin flip
+  (soft canopy shade, no color fetched). The G-buffer excludes foliage
+  from the wet-sheen treatment
 - **Vehicle glass** — translucent panes (windshields, windows; material
   alpha < 255, distinguishing them from alpha-cutout cargo/grilles) enter
   the G-buffer with a glass marker (normal.w = 3) and get a deterministic
@@ -99,7 +120,18 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
   with distance (80→400 m) so grazing mirror rays stay coherent instead
   of dissolving the horizon into speckle. `watercaustics=0` restores the
   textured look; camera pos rides in `u_gbParams` (librw uniform registry
-  is at its 40-slot cap — a NEW registerUniform silently returns -1!)
+  is at its 40-slot cap — a NEW registerUniform silently returns -1!).
+  The near paths (im3d quads + wavy/mask atomics) engage whenever ANY
+  RTGI water feature is on — they must NOT require the reflection toggle
+  (that split the sea: procedural far, vanilla textured near, with the
+  camera-following mask atomic keeping the OG env-mapped look glued to
+  the player). `u_gbParams.w` also carries a +2 flag when the reflection
+  pass is off so the stale reflection buffer never mixes in. During the
+  G-buffer prepass the wavy atomic draws with the CALLER's G-buffer
+  shader/marker (it used to scribble forward water colors into the
+  normal attachment, so near water lost its sea marker), and the forward
+  atomic draw pins the translucent blend state explicitly (the caller
+  sets none — inherited state was a source of z/blend artifacts)
 
 ## Architecture
 
