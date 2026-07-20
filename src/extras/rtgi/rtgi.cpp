@@ -503,8 +503,12 @@ RenderFrame(void)
 			lastW = RsGlobal.maximumWidth;
 			lastH = RsGlobal.maximumHeight;
 		}
-		if(initialised &&
-		   (RsGlobal.maximumWidth != lastW || RsGlobal.maximumHeight != lastH)){
+		// tolerate window-manager nudges (off-screen restore shaves a
+		// pixel); the interop images stay valid for tiny deltas
+		int dw = RsGlobal.maximumWidth - lastW, dh = RsGlobal.maximumHeight - lastH;
+		if(dw < 0) dw = -dw;
+		if(dh < 0) dh = -dh;
+		if(initialised && dw + dh > 4){
 			RtgiLog("RTGI: resolution changed %dx%d -> %dx%d, recreating\n",
 				lastW, lastH, RsGlobal.maximumWidth, RsGlobal.maximumHeight);
 			bool wasEnabled = gbRayTracedGI;

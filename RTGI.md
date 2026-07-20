@@ -190,10 +190,13 @@ Observations to revisit:
   but glass deserves a deterministic Fresnel treatment — see backlog).
 - Denoiser is now variance-guided; if thin-geometry shimmer persists in
   motion, next steps are variance spatial filtering and a history clamp.
-- GPU timings (native 1440p, 3090): blas/tlas 0.65, ao 1.9, gi 2.6,
-  denoise 2.2, refl 0.2 ms; in rain ~10 ms total (ao 2.6, gi 3.7,
-  refl 0.83 with wet roads + sea). Background-window runs report
-  inflated numbers (GPU power state) — compare like with like.
+- GPU timings (restored-window 1440p, test-box 3090, 2026-07-20 with
+  glass + reflection filter + procedural water): blas/tlas 0.68, ao 2.4,
+  gi 3.05, denoise 2.5, refl 0.27, reflt 0.11 ≈ 9.0 ms total. Earlier
+  dev-PC reference: 7.5 ms (ao 1.9, gi 2.6, denoise 2.2, refl 0.2); rain
+  ~10 ms. MINIMIZED runs report inflated numbers (GPU power state) —
+  compare like with like; the capture agent's gif mode restores the
+  window off-screen for honest measurements.
 - 0xc0000409 fullscreen-rain crash: did NOT reproduce in a 9-minute
   2560x1440 windowed rain soak (stable timings throughout). Suspect
   exclusive-fullscreen swapchain interaction; needs a real fullscreen
