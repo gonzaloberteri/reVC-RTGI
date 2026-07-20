@@ -37,6 +37,10 @@ bool PedSkinRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header);
 // that mixes the RT reflection buffer over the vanilla water.
 void WaterRenderBegin(void);
 void WaterRenderEnd(void);
+// near-camera wavy/mask water atomics bypass the im3d override; this draws
+// them with the RTGI water shader instead. Returns false when RTGI is off
+// (caller renders vanilla).
+bool RenderWaterAtomic(rw::Atomic *atomic);
 // true while GbufferRender re-renders the sea into the G-buffer
 extern bool gbWaterGbufPass;
 

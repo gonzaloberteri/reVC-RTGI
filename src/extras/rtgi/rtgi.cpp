@@ -20,6 +20,7 @@
 #include "skeleton.h"
 #include "debugmenu.h"
 #include "Timer.h"
+#include "Timecycle.h"
 #include "Frontend.h"
 #include "Draw.h"
 #include "World.h"
@@ -57,6 +58,7 @@ float gfAOStrength = 0.85f;
 float gfAORadius = 2.5f;
 int32 gnAORays = 2;
 bool gbSunShadows = true;
+bool gbMoonShadows = true;
 bool gbGIEnable = true;
 float gfGIBlend = 0.6f;
 float gfGIExposure = 1.0f;
@@ -65,6 +67,7 @@ bool gbReflections = true;
 bool gbReflFilter = true;
 bool gbGlassRefl = true;
 bool gbDumpTex;		// dev: log distinct world texture names (dumptex=1)
+bool gbWaterCaustics = true;
 float gfEmissiveBoost = 1.0f;
 bool gbGI2 = true;
 bool gbPhotoMode;
@@ -356,6 +359,7 @@ readConfigFile(void)
 		else if(sscanf(line, "aoradius=%f", &fval) == 1) gfAORadius = fval;
 		else if(sscanf(line, "aorays=%d", &ival) == 1) gnAORays = ival;
 		else if(sscanf(line, "sunshadows=%d", &ival) == 1) gbSunShadows = ival != 0;
+		else if(sscanf(line, "moonshadows=%d", &ival) == 1) gbMoonShadows = ival != 0;
 		else if(sscanf(line, "gi=%d", &ival) == 1) gbGIEnable = ival != 0;
 		else if(sscanf(line, "giblend=%f", &fval) == 1) gfGIBlend = fval;
 		else if(sscanf(line, "giexposure=%f", &fval) == 1) gfGIExposure = fval;
@@ -364,6 +368,7 @@ readConfigFile(void)
 		else if(sscanf(line, "reflfilter=%d", &ival) == 1) gbReflFilter = ival != 0;
 		else if(sscanf(line, "glassrefl=%d", &ival) == 1) gbGlassRefl = ival != 0;
 		else if(sscanf(line, "dumptex=%d", &ival) == 1) gbDumpTex = ival != 0;
+		else if(sscanf(line, "watercaustics=%d", &ival) == 1) gbWaterCaustics = ival != 0;
 		else if(sscanf(line, "emissive=%f", &fval) == 1) gfEmissiveBoost = fval;
 		else if(sscanf(line, "gi2=%d", &ival) == 1) gbGI2 = ival != 0;
 		else if(sscanf(line, "photo=%d", &ival) == 1) gbPhotoMode = ival != 0;
@@ -760,6 +765,32 @@ ReplacingVehicleShadows(void)
 	return initialised && gbRayTracedGI && gbAOEnable && gbSunShadows;
 }
 
+// moon brightness 0..1: VC draws the moon as a camera-relative sprite due
+// south (offset 0,-100,15), fully lit at 3AM, fading over +/-3h, dimmed
+// by cloud/fog coverage (mirrors CClouds::Render). Moon shadows trace the
+// same fixed direction with this as their strength.
+float
+MoonShadowStrength(void)
+{
+	if(!gbMoonShadows || CTimeCycle::GetSunDirection().z > 0.0f)
+		return 0.0f;
+	float minute = CClock::GetHours()*60 + CClock::GetMinutes() + CClock::GetSeconds()/60.0f;
+	float fade = Abs(minute - 180.0f);
+	if(fade >= 180.0f)
+		return 0.0f;
+	float coverage = Max(CWeather::Foggyness, CWeather::CloudCoverage);
+	return (1.0f - coverage) * (1.0f - fade/180.0f);
+}
+
+// to-moon unit vector matching the sprite placement
+void
+MoonDirection(float dir[3])
+{
+	dir[0] = 0.0f;
+	dir[1] = -0.98894f;	// normalize(0, -100, 15)
+	dir[2] = 0.14834f;
+}
+
 void
 AddDebugMenuEntries(void)
 {
@@ -768,6 +799,7 @@ AddDebugMenuEntries(void)
 	DebugMenuAddVar("RTGI", "Debug view", &gnDebugView, nil, 1, 0, DEBUGVIEW_MAX-1, debugViews);
 	DebugMenuAddVarBool8("RTGI", "RT ambient occlusion", (int8_t*)&gbAOEnable, nil);
 	DebugMenuAddVarBool8("RTGI", "RT sun shadows", (int8_t*)&gbSunShadows, nil);
+	DebugMenuAddVarBool8("RTGI", "RT moon shadows", (int8_t*)&gbMoonShadows, nil);
 	DebugMenuAddVarBool8("RTGI", "Diffuse GI", (int8_t*)&gbGIEnable, nil);
 	DebugMenuAddVar("RTGI", "GI blend", &gfGIBlend, nil, 0.05f, 0.0f, 1.0f);
 	DebugMenuAddVar("RTGI", "GI exposure", &gfGIExposure, nil, 0.1f, 0.1f, 5.0f);
@@ -775,6 +807,7 @@ AddDebugMenuEntries(void)
 	DebugMenuAddVarBool8("RTGI", "RT reflections", (int8_t*)&gbReflections, nil);
 	DebugMenuAddVarBool8("RTGI", "Reflection filter", (int8_t*)&gbReflFilter, nil);
 	DebugMenuAddVarBool8("RTGI", "Glass reflections", (int8_t*)&gbGlassRefl, nil);
+	DebugMenuAddVarBool8("RTGI", "Water caustics", (int8_t*)&gbWaterCaustics, nil);
 	DebugMenuAddVar("RTGI", "Emissive boost", &gfEmissiveBoost, nil, 0.25f, 0.0f, 8.0f);
 	DebugMenuAddVarBool8("RTGI", "GI second bounce", (int8_t*)&gbGI2, nil);
 	DebugMenuAddVarBool8("RTGI", "Photo mode (accumulate)", (int8_t*)&gbPhotoMode, nil);

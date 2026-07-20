@@ -32,6 +32,11 @@ extern float gfAORadius;
 extern int32 gnAORays;
 // RT sun shadows (vehicle blob-shadow replacement)
 extern bool gbSunShadows;
+extern bool gbMoonShadows;
+
+// moon shadow support (rtgi.cpp): brightness 0..1 and to-moon direction
+float MoonShadowStrength(void);
+void MoonDirection(float dir[3]);
 // diffuse GI
 extern bool gbGIEnable;
 extern float gfGIBlend;		// 0 = flat timecycle ambient, 1 = full GI
@@ -41,6 +46,7 @@ extern bool gbReflections;
 extern bool gbReflFilter;	// temporal + spatial filter over the reflection buffer
 extern bool gbGlassRefl;	// deterministic Fresnel mirror on vehicle glass
 extern bool gbDumpTex;	// dev: log distinct world texture names
+extern bool gbWaterCaustics;	// animated caustic shimmer on the water surface
 extern float gfEmissiveBoost;	// night windows/neon radiance multiplier
 extern bool gbGI2;		// second GI bounce (Russian roulette)
 extern bool gbPhotoMode;	// progressive accumulation while the camera is still

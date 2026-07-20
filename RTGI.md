@@ -20,7 +20,11 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
   denoiser (SVGF-style); replaces part of the flat timecycle ambient
   (blend knob preserves art direction)
 - **Sun/moon shadows** — vehicles and peds cast accurate ray traced shadows
-  (replaces their blob shadows); world sun light stays baked, as shipped
+  (replaces their blob shadows); world sun light stays baked, as shipped.
+  At night the moon takes over as caster: fixed southern direction
+  matching the moon sprite (offset 0,-100,15), strength follows the
+  sprite's brightness ramp (full at 3AM, fades over ±3h, dimmed by
+  cloud/fog) × 0.30 (`moonshadows=` toggle)
 - **Point lights** — streetlights/headlights feed the GI bounce (NEE)
 - **Emissive night models** — lit windows and neon (VC's timed night
   models) emit their material color into the GI bounce and into wet-road/
@@ -56,17 +60,26 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
   Fresnel mirror from the reflection pass (F0 0.04 → 0.95 at grazing);
   the composite tints the pane by the Fresnel weight while keeping the
   vanilla translucency (`glassrefl=` toggle)
-- **Building windows** — facade window tiles get the same Fresnel glass
-  marker, detected by texture name (contains "win", minus "wine"/"winch"
-  false positives — VC world models carry no matFX env maps, so the name
-  is the only signal; vocabulary mined via the `dumptex=1` dev key).
-  Streets of windows mirror palms/sky/neon at grazing angles while stucco
-  stays matte; glass-marked mesh count rides the telemetry line
+- **World glass panes** — translucent world/object meshes (storefronts,
+  the biker-bar/emporium fronts, breakable shop glass; material
+  alpha < 255) get the same Fresnel glass marker as vehicle panes.
+  Baked "window" facade art stays untouched — an earlier texture-name
+  heuristic double-reflected over prebaked reflections and was reverted
+  (VC world models also carry no matFX env maps; both signals dead ends,
+  the material-translucency test is the real one). Glass-marked mesh
+  count rides the telemetry line; `dumptex=1` logs texture names (dev)
 - **Sea reflections** — the water surface is re-rendered into the G-buffer
   (via a librw im3d shader-override hook, patch in docs/librw-rtgi.patch)
   and the reflection pass mirrors the actual scene off it with a
   procedural swell ripple; the forward water pass mixes the result over
   the vanilla look by fresnel strength
+- **Water caustics + near-water fix** — the forward water shader animates
+  the classic iterative-interference caustic shimmer (world-space tiled,
+  ~12.6 m period, distance-faded 50→130 m to hide the far-sector LOD
+  boundary; `watercaustics=` toggle). The near-camera wavy/mask water
+  renders as ATOMICS that bypassed the im3d override and popped to the
+  plain vanilla texture up close — they now draw through the same RTGI
+  water shader (`RenderWaterAtomic`)
 
 ## Architecture
 
@@ -107,7 +120,7 @@ AO strength/radius/rays, GI blend/exposure, debug views (RT normals/depth/
 instances, AO, G-buffer, sun visibility, GI, reflections).
 
 `rtgi_config.txt` next to the exe (for automated testing): `view=N`,
-`enabled/ao/gi/gi2/photo/denoise/reflections/reflfilter/glassrefl/sunshadows=0|1`,
+`enabled/ao/gi/gi2/photo/denoise/reflections/reflfilter/glassrefl/sunshadows/moonshadows/watercaustics=0|1`,
 `aostrength/aoradius/giblend/giexposure/emissive=F`, `aorays=N`,
 `shotframes=N` (periodic BMP dumps), `dumptex=1` (log distinct world
 texture names once each), `tp=x,y,z[,heading]` (teleport

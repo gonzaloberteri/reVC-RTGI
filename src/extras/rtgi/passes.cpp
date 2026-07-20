@@ -826,6 +826,12 @@ PassesTraceAO(VkCommandBuffer cmd, uint32_t frame, uint32_t numRays, float radiu
 	CVector sunDir = CTimeCycle::GetSunDirection();
 	pc.sunDir[0] = sunDir.x; pc.sunDir[1] = sunDir.y; pc.sunDir[2] = sunDir.z;
 	pc.sunDir[3] = (sunDir.z > 0.0f && CTimeCycle::GetShadowStrength() > 0) ? 1.0f : 0.0f;
+	// at night the moon takes over as the shadow caster (fixed direction
+	// matching the sprite; strength handled in the composite)
+	if(pc.sunDir[3] == 0.0f && MoonShadowStrength() > 0.0f){
+		MoonDirection(pc.sunDir);
+		pc.sunDir[3] = 1.0f;
+	}
 	pc.size[0] = gInterop.aoOutput.width;
 	pc.size[1] = gInterop.aoOutput.height;
 	pc.frame = frame;

@@ -1453,7 +1453,11 @@ CWaterLevel::RenderTransparentWater(void)
 										RwCameraGetFrame(RwCameraGetCurrentCamera()));
 
 		RwFrameTranslate(RpAtomicGetFrame(ms_pMaskAtomic), &pos, rwCOMBINEREPLACE);
-				
+
+#ifdef RTGI
+		// atomics bypass the im3d water override; keep the RTGI look
+		if(!RayTracedGI::RenderWaterAtomic((rw::Atomic*)ms_pMaskAtomic))
+#endif
 		RpAtomicRender(ms_pMaskAtomic);
 	}
 #else
@@ -1804,7 +1808,10 @@ CWaterLevel::RenderOneWavySector(float fX, float fY, float fZ, RwRGBA const &col
 			pos.z = fZ;
 	
 			RwFrameTranslate(RpAtomicGetFrame(ms_pWavyAtomic), &pos, rwCOMBINEREPLACE);
-		
+
+#ifdef RTGI
+			if(!RayTracedGI::RenderWaterAtomic((rw::Atomic*)ms_pWavyAtomic))
+#endif
 			RpAtomicRender(ms_pWavyAtomic);
 		}
 	}

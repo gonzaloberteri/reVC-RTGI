@@ -23,6 +23,8 @@
 #include "ModelInfo.h"
 #include "WaterLevel.h"
 #include "Weather.h"
+#include "Timer.h"
+#include "Camera.h"
 
 namespace RayTracedGI {
 
@@ -48,6 +50,7 @@ static int32 u_gbParams;
 static int32 u_reflTex;
 static int32 u_rtgiReflParams;
 static int32 u_rtgiVehParams;
+static int32 u_rtgiWaterCam;
 
 #define U(i) (rw::gl3::currentShader->uniformLocations[i])
 
@@ -57,24 +60,6 @@ static int32 u_rtgiVehParams;
 static unsigned int gEnvGlassMeshes;
 
 unsigned int EnvGlassMeshCount(void) { return gEnvGlassMeshes; }
-
-// building windows are baked facade textures — the texture NAME is the only
-// glass signal VC has (no matFX env maps on world models). The dumped
-// vocabulary ("apartmentwin", "hotelwindow", "tidewin", "acwindow",
-// "dt_blueywin", "big_win_LOD"...) reduces to: contains "win", minus the
-// false positives ("wine", "winch").
-static bool
-texNameIsWindow(const char *name)
-{
-	char low[33];
-	int i;
-	for(i = 0; i < 32 && name[i]; i++)
-		low[i] = (char)tolower(name[i]);
-	low[i] = '\0';
-	if(strstr(low, "wine") || strstr(low, "winch"))
-		return false;
-	return strstr(low, "win") != nil;
-}
 
 static void
 dumpTexName(rw::gl3::InstanceData *inst)
@@ -109,6 +94,7 @@ GbufferInit(int width, int height)
 	u_reflTex = registerUniform("u_reflTex");
 	u_rtgiReflParams = registerUniform("u_rtgiReflParams");
 	u_rtgiVehParams = registerUniform("u_rtgiVehParams");
+	u_rtgiWaterCam = registerUniform("u_rtgiWaterCam");
 
 	{
 #include "shaders/obj/rtgiGbuf_vert.inc"
@@ -260,19 +246,16 @@ gbufDrawAtomic(rw::Atomic *atomic, float reflW, float glassReflW, bool envAsGlas
 		// reflection pass gives panes a deterministic Fresnel mirror
 		float want = reflW;
 		if(meshHasAlpha(inst)){
+			// translucent meshes are REAL glass panes (vehicle
+			// windows, mall storefronts, bar fronts, breakable
+			// shop glass) — baked facade "window" textures are
+			// opaque and stay untouched
 			if(glassReflW <= 0.0f || !meshIsGlass(inst))
 				continue;
 			want = glassReflW;
-		}else if(envAsGlass){
-			if(gbDumpTex)
-				dumpTexName(inst);
-			rw::Material *m = inst->material;
-			if(m->texture && texNameIsWindow(m->texture->name)){
-				// facade window tiles get the Fresnel glass sheen
-				want = 3.0f;
-				gEnvGlassMeshes++;
-			}
-		}
+			gEnvGlassMeshes++;
+		}else if(envAsGlass && gbDumpTex)
+			dumpTexName(inst);
 		if(want != boundReflW){
 			float p[4] = { want, 0.0f, 0.0f, 0.0f };
 			glUniform4fv(U(u_gbParams), 1, p);
@@ -330,7 +313,11 @@ GbufferRender(void)
 				reflW = 1.0f;
 			else
 				reflW = 0.25f;
-			envAsGlass = gbGlassRefl && gbReflections;
+			// translucent world meshes (storefronts, mall glass)
+			// are real panes and mirror like vehicle glass
+			if(gbGlassRefl && gbReflections)
+				glassReflW = 3.0f;
+			envAsGlass = true;
 		}
 
 		if(RwObjectGetType(e->m_rwObject) == rpATOMIC)
@@ -387,7 +374,12 @@ uploadCompositeUniforms(void)
 	glUniform1i(U(u_reflTex), 5);
 	float reflParams[4] = { gbReflections ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f };
 	glUniform4fv(U(u_rtgiReflParams), 1, reflParams);
-	float shadowStrength = gbSunShadows ? (CTimeCycle::GetShadowStrength()/255.0f)*0.55f : 0.0f;
+	// sun by day; at night the moon casts subtle shadows in the same slot
+	float shadowStrength;
+	if(CTimeCycle::GetSunDirection().z > 0.0f)
+		shadowStrength = gbSunShadows ? (CTimeCycle::GetShadowStrength()/255.0f)*0.55f : 0.0f;
+	else
+		shadowStrength = MoonShadowStrength()*0.30f;
 	float params[4] = { gfAOStrength, 1.0f/gWidth, 1.0f/gHeight, shadowStrength };
 	glUniform4fv(U(u_rtgiParams), 1, params);
 	// rain: the GI tracks the dark storm sky and reads gloomier than the
@@ -526,7 +518,26 @@ PedRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 }
 
 // wrap the forward water draws: the im3d override samples the RT
-// reflection buffer on top of the vanilla water look
+// reflection buffer + animates a caustic shimmer on top of the vanilla
+// water look
+static void
+waterUploadUniforms(void)
+{
+	using namespace rw::gl3;
+
+	glActiveTexture(GL_TEXTURE5);
+	glBindTexture(GL_TEXTURE_2D, gInterop.reflOutput.glTexture);
+	glActiveTexture(GL_TEXTURE0);
+	glUniform1i(U(u_reflTex), 5);
+	// wrap time to keep float precision in the caustic sin/cos towers
+	float t = (float)(CTimer::GetTimeInMilliseconds() % 3600000u) * 0.001f;
+	float params[4] = { t, 1.0f/gWidth, 1.0f/gHeight, gbWaterCaustics ? 1.0f : 0.0f };
+	glUniform4fv(U(u_rtgiParams), 1, params);
+	CVector camPos = TheCamera.GetPosition();
+	float cam[4] = { camPos.x, camPos.y, camPos.z, 0.0f };
+	glUniform4fv(U(u_rtgiWaterCam), 1, cam);
+}
+
 void
 WaterRenderBegin(void)
 {
@@ -536,12 +547,7 @@ WaterRenderBegin(void)
 		return;
 
 	gWaterShader->use();
-	glActiveTexture(GL_TEXTURE5);
-	glBindTexture(GL_TEXTURE_2D, gInterop.reflOutput.glTexture);
-	glActiveTexture(GL_TEXTURE0);
-	glUniform1i(U(u_reflTex), 5);
-	float params[4] = { 0.0f, 1.0f/gWidth, 1.0f/gHeight, 0.0f };
-	glUniform4fv(U(u_rtgiParams), 1, params);
+	waterUploadUniforms();
 	im3dOverrideShader = gWaterShader;
 }
 
@@ -549,6 +555,39 @@ void
 WaterRenderEnd(void)
 {
 	rw::gl3::im3dOverrideShader = nil;
+}
+
+// the near-camera wavy/mask water renders as ATOMICS, which bypass the
+// im3d override — vanilla they pop to the plain texture look right where
+// the player can see the water best. Draw them with the same water shader
+// (caustics + RT reflection) instead.
+bool
+RenderWaterAtomic(rw::Atomic *atomic)
+{
+	using namespace rw::gl3;
+
+	if(!gbRayTracedGI || !gbAOEnable || !gbReflections || gWaterShader == nil)
+		return false;
+
+	rw::Geometry *geo = atomic->geometry;
+	if(geo == nil || geo->flags & rw::Geometry::NATIVE)
+		return false;
+	atomic->getPipeline()->instance(atomic);
+	InstanceDataHeader *header = (InstanceDataHeader*)geo->instData;
+	if(header == nil || header->platform != rw::PLATFORM_GL3)
+		return false;
+
+	gWaterShader->use();
+	waterUploadUniforms();
+	setWorldMatrix(atomic->getFrame()->getLTM());
+	setupVertexInput(header);
+	InstanceData *inst = header->inst;
+	for(rw::uint32 i = 0; i < header->numMeshes; i++, inst++){
+		setTexture(0, inst->material->texture);
+		drawInst(header, inst);
+	}
+	teardownVertexInput(header);
+	return true;
 }
 
 bool
