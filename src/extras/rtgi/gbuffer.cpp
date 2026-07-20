@@ -314,8 +314,10 @@ GbufferRender(void)
 			else
 				reflW = 0.25f;
 			// translucent world meshes (storefronts, mall glass)
-			// are real panes and mirror like vehicle glass
-			if(gbGlassRefl && gbReflections)
+			// are real panes and mirror like vehicle glass — but a
+			// distance-fading entity drops its material alpha and
+			// must not flash into a mirror mid-fade
+			if(gbGlassRefl && gbReflections && !e->bDistanceFade)
 				glassReflW = 3.0f;
 			envAsGlass = true;
 		}
