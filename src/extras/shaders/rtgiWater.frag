@@ -2,9 +2,12 @@ uniform sampler2D tex0;
 uniform sampler2D u_reflTex;
 
 uniform vec4 u_rtgiParams;	// x = time (s), y = 1/width, z = 1/height, w = caustic strength
-// camera position rides in u_gbParams.xyz here: librw's uniform registry
-// (MAX_UNIFORMS 40) is full, so the water pass reuses a registered slot
+// camera position rides in u_gbParams.xyz (w = 1 when v_color must be
+// replaced by u_rtgiGIParams: the wavy/mask ATOMICS carry static daylight
+// prelight, wrong at night); librw's uniform registry (MAX_UNIFORMS 40)
+// is full, so the water pass reuses registered slots
 uniform vec4 u_gbParams;
+uniform vec4 u_rtgiGIParams;	// timecycle water RGBA (atomic path)
 
 FSIN vec4 v_color;
 FSIN vec2 v_tex0;
@@ -50,12 +53,18 @@ main(void)
 			ca = caustic(v_worldpos.xy, u_rtgiParams.x*0.5 + 23.0) * fade * u_rtgiParams.w;
 		// 0.62 stands in for the mean of the dropped texture so the
 		// procedural sea keeps the vanilla art tone
-		vec3 base = v_color.rgb*0.62;
-		color.rgb = clamp(base*(1.0 + 1.8*ca) + 0.10*ca, 0.0, 1.0);
+		vec4 wcol = mix(v_color, u_rtgiGIParams, u_gbParams.w);
+		vec3 base = wcol.rgb*0.62;
+		// the white additive sparkle dims with the base luminance so
+		// night water does not glow
+		float lum = clamp(dot(base, vec3(0.299, 0.587, 0.114))*3.0, 0.0, 1.0);
+		color.rgb = clamp(base*(1.0 + 1.8*ca) + 0.10*ca*lum, 0.0, 1.0);
 		// near water stays translucent (shore sand shows through, as
-		// vanilla); far water goes opaque so the seabed LOD texture
+		// vanilla); far water goes opaque so the seabed LOD prelight
 		// cannot grid-pattern through the clean procedural surface
-		color.a = mix(v_color.a * tex.a, 1.0, smoothstep(150.0, 400.0, dist));
+		// vanilla only reads the floor through the first ~40 m of
+		// shallows; past that the seabed mip pattern grids through
+		color.a = mix(wcol.a * tex.a, 1.0, smoothstep(30.0, 100.0, dist));
 	}else{
 		// caustics toggled off: vanilla textured look
 		color = v_color*tex;

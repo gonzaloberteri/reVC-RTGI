@@ -144,6 +144,14 @@ void main()
 	uint state = px.x*7919u + px.y*104729u + pc.frame*15485863u;
 
 	vec3 dir = reflect(viewDir, normal);
+	// a water mirror cannot reflect downward: at extreme grazing angles the
+	// interpolated normal lets the ray dip below horizontal, punch through
+	// the (non-TLAS) water plane and hit the seabed BLAS — whose texture
+	// then grids across the horizon
+	if(nr.w > 1.5 && nr.w < 2.5 && dir.z < 0.02){
+		dir.z = 0.02;
+		dir = normalize(dir);
+	}
 	vec3 origin = worldPos + normal*0.05;
 
 	rayQueryEXT rq;

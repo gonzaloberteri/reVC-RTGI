@@ -423,9 +423,10 @@ texIsOGWater(rw::Texture *tex)
 	for(i = 0; i < 32 && tex->name[i]; i++)
 		low[i] = (char)tolower(tex->name[i]);
 	low[i] = '\0';
-	// seabed LOD grids through/past the water at the horizon; treat it as
-	// part of the OG water look
-	return strstr(low, "waterclear") != nil || strstr(low, "seabed") != nil;
+	// NOT the seabed: sandy floor through the shallows is vanilla art (its
+	// stripped prelight is a dark checker), and the far-horizon seabed
+	// grid is hidden by the opaque-far water ramp anyway
+	return strstr(low, "waterclear") != nil;
 }
 
 // LOD sea atomics carry matFX and render through librw's STOCK matFX
@@ -616,7 +617,7 @@ PedRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 // reflection buffer + animates a caustic shimmer on top of the vanilla
 // water look
 static void
-waterUploadUniforms(void)
+waterUploadUniforms(bool atomicPath)
 {
 	using namespace rw::gl3;
 
@@ -628,11 +629,16 @@ waterUploadUniforms(void)
 	float t = (float)(CTimer::GetTimeInMilliseconds() % 3600000u) * 0.001f;
 	float params[4] = { t, 1.0f/gWidth, 1.0f/gHeight, gbWaterCaustics ? 1.0f : 0.0f };
 	glUniform4fv(U(u_rtgiParams), 1, params);
-	// camera rides in u_gbParams: the librw uniform registry (40 slots) is
-	// full, so the water pass reuses a slot the G-buffer pass owns
+	// camera rides in u_gbParams (w = 1 on the atomic path: wavy/mask
+	// prelight is static daylight and must be replaced by the timecycle
+	// water color); the librw uniform registry (40 slots) is full, so the
+	// water pass reuses slots other passes own
 	CVector camPos = TheCamera.GetPosition();
-	float cam[4] = { camPos.x, camPos.y, camPos.z, 0.0f };
+	float cam[4] = { camPos.x, camPos.y, camPos.z, atomicPath ? 1.0f : 0.0f };
 	glUniform4fv(U(u_gbParams), 1, cam);
+	float wcol[4] = { CTimeCycle::GetWaterRed()/255.0f, CTimeCycle::GetWaterGreen()/255.0f,
+		CTimeCycle::GetWaterBlue()/255.0f, CTimeCycle::GetWaterAlpha()/255.0f };
+	glUniform4fv(U(u_rtgiGIParams), 1, wcol);
 }
 
 void
@@ -644,7 +650,7 @@ WaterRenderBegin(void)
 		return;
 
 	gWaterShader->use();
-	waterUploadUniforms();
+	waterUploadUniforms(false);
 	im3dOverrideShader = gWaterShader;
 }
 
@@ -675,7 +681,7 @@ RenderWaterAtomic(rw::Atomic *atomic)
 		return false;
 
 	gWaterShader->use();
-	waterUploadUniforms();
+	waterUploadUniforms(true);
 	setWorldMatrix(atomic->getFrame()->getLTM());
 	setupVertexInput(header);
 	InstanceData *inst = header->inst;
