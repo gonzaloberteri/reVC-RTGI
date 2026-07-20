@@ -29,6 +29,7 @@
 #include "Clock.h"
 #include "Weather.h"
 #include "Camera.h"
+#include "CutsceneMgr.h"
 
 namespace RayTracedGI {
 
@@ -85,6 +86,15 @@ static bool gWantTeleport;
 static int32 gnForceArea = 0;	// config "area=N": interior for the teleport (eAreaName)
 static int32 gnForceHour = -1;	// config "hour=N": pin the game clock
 static int32 gnForceWeather = -1;	// config "weather=N"
+// config "cutscene=NAME,x,y,z": play a mission cutscene's camera spline at
+// the given offset — deterministic camera paths for A/B captures (the
+// spline data is offset-relative, so any location works). "cutloop=1"
+// restarts the spline when it finishes (repeating sweep for GIFs).
+static char gCutsceneName[12];
+static float gCutsceneOfs[3];
+static bool gWantCutscene;
+static bool gCutsceneStarted;
+static bool gbCutsceneLoop;
 // a VK submit happened this frame and GL must signal it back, regardless of
 // what the debug menu did to the toggles in between
 static bool gFrameSubmitted;
@@ -213,6 +223,21 @@ devHarnessTick(void)
 		RtgiLog("RTGI: forced weather %d\n", gnForceWeather);
 		appliedWeather = gnForceWeather;
 	}
+
+	// deterministic capture cameras: play a cutscene spline at the
+	// configured offset once the world has settled
+	if(gWantCutscene && !gCutsceneStarted && tick >= 250){
+		CCutsceneMgr::LoadCutsceneData(gCutsceneName);
+		CCutsceneMgr::SetCutsceneOffset(CVector(gCutsceneOfs[0], gCutsceneOfs[1], gCutsceneOfs[2]));
+		CCutsceneMgr::ms_cutsceneLoadStatus = 1;
+		gCutsceneStarted = true;
+		gResetGIHistory = true;
+		RtgiLog("RTGI: cutscene %s started at %.0f %.0f %.0f (loop=%d)\n",
+			gCutsceneName, gCutsceneOfs[0], gCutsceneOfs[1], gCutsceneOfs[2], gbCutsceneLoop);
+	}
+	if(gCutsceneStarted && gbCutsceneLoop && CCutsceneMgr::HasLoaded() &&
+	   CCutsceneMgr::HasCutsceneFinished())
+		CCutsceneMgr::SetupCutsceneToStart();
 }
 
 static void
@@ -379,6 +404,9 @@ readConfigFile(void)
 			gTeleportHasHeading = true;
 		}
 		else if(sscanf(line, "tp=%f,%f,%f", &gTeleport[0], &gTeleport[1], &gTeleport[2]) == 3) gWantTeleport = true;
+		else if(sscanf(line, "cutscene=%11[^,\n],%f,%f,%f", gCutsceneName,
+		   &gCutsceneOfs[0], &gCutsceneOfs[1], &gCutsceneOfs[2]) == 4) gWantCutscene = true;
+		else if(sscanf(line, "cutloop=%d", &ival) == 1) gbCutsceneLoop = ival != 0;
 		else if(sscanf(line, "area=%d", &ival) == 1) gnForceArea = ival;
 		else if(sscanf(line, "hour=%d", &ival) == 1) gnForceHour = ival;
 		else if(sscanf(line, "weather=%d", &ival) == 1) gnForceWeather = ival;
