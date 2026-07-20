@@ -595,6 +595,13 @@ pedDrawMeshes(rw::uint32 flags, rw::gl3::InstanceDataHeader *header)
 
 	float vehParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 	glUniform4fv(U(u_rtgiVehParams), 1, vehParams);
+	// peds must not RECEIVE the RT sun shadow: their own BLAS sits in the
+	// shadow-ray mask, so body pixels self-hit and a hard 1-ray shadow
+	// paints uncanny bands across the clothes. Vanilla peds are flat
+	// directionally lit with no self shadow — match that; they still CAST
+	// onto the ground (the ground pixels do the tracing)
+	float params[4] = { gfAOStrength, 1.0f/gWidth, 1.0f/gHeight, 0.0f };
+	glUniform4fv(U(u_rtgiParams), 1, params);
 
 	InstanceData *inst = header->inst;
 	int32 n = header->numMeshes;
