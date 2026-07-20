@@ -63,6 +63,7 @@ float gfGIExposure = 1.0f;
 bool gbDenoise = true;
 bool gbReflections = true;
 bool gbReflFilter = true;
+bool gbGlassRefl = true;
 float gfEmissiveBoost = 1.0f;
 bool gbGI2 = true;
 bool gbPhotoMode;
@@ -360,6 +361,7 @@ readConfigFile(void)
 		else if(sscanf(line, "denoise=%d", &ival) == 1) gbDenoise = ival != 0;
 		else if(sscanf(line, "reflections=%d", &ival) == 1) gbReflections = ival != 0;
 		else if(sscanf(line, "reflfilter=%d", &ival) == 1) gbReflFilter = ival != 0;
+		else if(sscanf(line, "glassrefl=%d", &ival) == 1) gbGlassRefl = ival != 0;
 		else if(sscanf(line, "emissive=%f", &fval) == 1) gfEmissiveBoost = fval;
 		else if(sscanf(line, "gi2=%d", &ival) == 1) gbGI2 = ival != 0;
 		else if(sscanf(line, "photo=%d", &ival) == 1) gbPhotoMode = ival != 0;
@@ -769,6 +771,7 @@ AddDebugMenuEntries(void)
 	DebugMenuAddVarBool8("RTGI", "GI denoise", (int8_t*)&gbDenoise, nil);
 	DebugMenuAddVarBool8("RTGI", "RT reflections", (int8_t*)&gbReflections, nil);
 	DebugMenuAddVarBool8("RTGI", "Reflection filter", (int8_t*)&gbReflFilter, nil);
+	DebugMenuAddVarBool8("RTGI", "Glass reflections", (int8_t*)&gbGlassRefl, nil);
 	DebugMenuAddVar("RTGI", "Emissive boost", &gfEmissiveBoost, nil, 0.25f, 0.0f, 8.0f);
 	DebugMenuAddVarBool8("RTGI", "GI second bounce", (int8_t*)&gbGI2, nil);
 	DebugMenuAddVarBool8("RTGI", "Photo mode (accumulate)", (int8_t*)&gbPhotoMode, nil);

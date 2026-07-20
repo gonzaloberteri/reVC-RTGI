@@ -30,7 +30,7 @@ GL shaders: `cd src/extras/shaders && sh makeinc_glsl.sh <file>`. RT shaders: `c
 
 **All runs happen on the test box `192.168.0.209`** — use `powershell -File docs/remote_test.ps1 -Config "<key=value lines>" -Seconds 95 -OutDir <dir>` (no `pwsh` on the dev PC). It pushes the fresh exe + config, triggers the `rtgi-run` scheduled task (launches `C:\Users\pc\rtgi_launch.cmd` minimized **in the remote console session** — SSH-spawned GUI processes get no display/GPU), waits, kills `reVC`, and pulls back `rtgi.log` + shots as PNG. Then **look at the images** (Read tool). Judge like a graphics programmer: silhouettes, light direction, noise, ghosting, brightness vs vanilla art direction. Judge lighting changes from **multiple camera angles** — a single angle once hid whole facades flooding the street pink.
 
-Remote box facts: user `pc`, key-based SSH, default remote shell is **PowerShell 5.1** (no `&&`; scp staged files instead of fighting nested quoting), RTX 3090 (+ an Intel iGPU — GL correctly lands on NVIDIA in the console session), VNC available if a live look is ever needed.
+Remote box facts: user `pc`, key-based SSH, default remote shell is **PowerShell 5.1** (no `&&`; scp staged files instead of fighting nested quoting), RTX 3090 (+ an Intel iGPU — GL correctly lands on NVIDIA in the console session), VNC available if a live look is ever needed. Display is **4K@60** — pass `-Window "3840 2160"` when a shot needs real detail (glass close-ups, showcase); keep 720p for routine runs (shots scp back 9× smaller).
 
 Config reference (files land in the remote game dir):
 
@@ -68,7 +68,7 @@ Original backlog #1–#9 all shipped (composites, emissive night models, headlig
 
 ## Backlog (highest value first; when exhausted, invent more and re-polish)
 
-1. **Glass & window specular.** Vehicle windshields are non-opaque in the BLAS (dither in reflections) and building windows have no specular response. Give glass a proper reflective treatment (Fresnel-weighted RT reflection sample, deterministic — not stochastic — for smooth surfaces).
+1. **Window specular for buildings.** Vehicle glass is DONE (deterministic Fresnel via G-buffer marker 3, glassrefl=, keep panes translucent — alpha-boosting to mirror made fog sheets). Buildings remain: facade window textures have no specular response; needs per-material detection (texture-name heuristic?) in the world G-buffer path, then the same glass marker.
 2. **Moon shadows + night polish.** Sun shadows exist; at night the moon casts nothing. Trace moon visibility at night hours, soft penumbra, subtle intensity. Re-judge night emissive balance after.
 3. **Transient combat lights.** Explosions/gunfire already `AddLight` LIGHT_POINT → likely already feed GI. Verify in combat at night (spawn a fight or scripted explosion via debug); if muzzle flashes/explosions don't visibly bounce, wire them into the GI light set with short decay.
 4. **Interior light shafts.** Blocked on cataloguing interior floor coordinates per `area=` (hotel = save start, area 1; the malibu guess 489.6,-84.5 was wrong). Catalogue a few interiors first (debug-teleport + `area=N` sweep), then add volumetric shafts from windows/doors.

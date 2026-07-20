@@ -50,6 +50,12 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
   BLAS ranges; every RT pass traverses them stochastically (45% coverage) so
   canopies cast soft partial shadows/AO instead of solid-quad blobs, and the
   G-buffer excludes them from the wet-sheen treatment
+- **Vehicle glass** — translucent panes (windshields, windows; material
+  alpha < 255, distinguishing them from alpha-cutout cargo/grilles) enter
+  the G-buffer with a glass marker (normal.w = 3) and get a deterministic
+  Fresnel mirror from the reflection pass (F0 0.04 → 0.95 at grazing);
+  the composite tints the pane by the Fresnel weight while keeping the
+  vanilla translucency (`glassrefl=` toggle)
 - **Sea reflections** — the water surface is re-rendered into the G-buffer
   (via a librw im3d shader-override hook, patch in docs/librw-rtgi.patch)
   and the reflection pass mirrors the actual scene off it with a
@@ -95,7 +101,7 @@ AO strength/radius/rays, GI blend/exposure, debug views (RT normals/depth/
 instances, AO, G-buffer, sun visibility, GI, reflections).
 
 `rtgi_config.txt` next to the exe (for automated testing): `view=N`,
-`enabled/ao/gi/gi2/photo/denoise/reflections/reflfilter/sunshadows=0|1`,
+`enabled/ao/gi/gi2/photo/denoise/reflections/reflfilter/glassrefl/sunshadows=0|1`,
 `aostrength/aoradius/giblend/giexposure/emissive=F`, `aorays=N`,
 `shotframes=N` (periodic BMP dumps), `tp=x,y,z[,heading]` (teleport
 after load; heading in degrees, 0 = north, CCW, snaps the camera

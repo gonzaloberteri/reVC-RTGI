@@ -7,7 +7,7 @@ uniform vec4 u_rtgiReflParams;	// x = reflections enabled
 
 uniform vec4 u_rtgiParams;	// x = ao strength, y = 1/width, z = 1/height, w = sun shadow strength
 uniform vec4 u_rtgiGIParams;	// x = gi blend, y = gi exposure, z/w unused
-uniform vec4 u_rtgiVehParams;	// x = env-map replacement scale for this material
+uniform vec4 u_rtgiVehParams;	// x = env-map replacement scale, y = glass pane
 
 FSIN vec4 v_color;
 FSIN vec3 v_amb;
@@ -41,6 +41,15 @@ main(void)
 	if(u_rtgiReflParams.x > 0.5 && u_rtgiVehParams.x > 0.0){
 		vec4 refl = texture(u_reflTex, uv);
 		color.rgb = mix(color.rgb, refl.rgb, refl.a * u_rtgiVehParams.x);
+	}
+
+	// glass panes: deterministic Fresnel mirror from the reflection pass.
+	// The pane's own translucency is kept vanilla — boosting alpha toward
+	// the mirror turned stacked windows into opaque sky-sheets; tinting
+	// the pane color by the Fresnel weight reads right and stays subtle
+	if(u_rtgiReflParams.x > 0.5 && u_rtgiVehParams.y > 0.5){
+		vec4 refl = texture(u_reflTex, uv);
+		color.rgb = mix(color.rgb, refl.rgb, refl.a);
 	}
 
 	color.rgb = mix(u_fogColor.rgb, color.rgb, v_fog);

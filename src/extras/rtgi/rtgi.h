@@ -39,6 +39,7 @@ extern float gfGIExposure;
 extern bool gbDenoise;
 extern bool gbReflections;
 extern bool gbReflFilter;	// temporal + spatial filter over the reflection buffer
+extern bool gbGlassRefl;	// deterministic Fresnel mirror on vehicle glass
 extern float gfEmissiveBoost;	// night windows/neon radiance multiplier
 extern bool gbGI2;		// second GI bounce (Russian roulette)
 extern bool gbPhotoMode;	// progressive accumulation while the camera is still

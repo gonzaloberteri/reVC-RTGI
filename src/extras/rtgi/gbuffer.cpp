@@ -155,8 +155,28 @@ GbufferShutdown(void)
 	if(gDepthRbo){ glDeleteRenderbuffers(1, &gDepthRbo); gDepthRbo = 0; }
 }
 
+static bool
+meshHasAlpha(rw::gl3::InstanceData *inst)
+{
+	rw::Material *m = inst->material;
+	if(inst->vertexAlpha || m->color.alpha != 255)
+		return true;
+	return m->texture && m->texture->raster &&
+	   PLUGINOFFSET(rw::gl3::Gl3Raster, m->texture->raster, rw::gl3::nativeRasterOffset)->hasAlpha;
+}
+
+// glass panes are TRANSLUCENT (material color alpha < 255); alpha-cutout
+// meshes (cargo junk, grilles, decals) are opaque materials with an alpha
+// texture and must not become mirrors
+static bool
+meshIsGlass(rw::gl3::InstanceData *inst)
+{
+	rw::uint8 a = inst->material->color.alpha;
+	return a != 255 && a != 0;
+}
+
 static void
-gbufDrawAtomic(rw::Atomic *atomic, float reflW)
+gbufDrawAtomic(rw::Atomic *atomic, float reflW, float glassReflW)
 {
 	using namespace rw::gl3;
 
@@ -180,20 +200,29 @@ gbufDrawAtomic(rw::Atomic *atomic, float reflW)
 
 	float refl[4] = { reflW, 0.0f, 0.0f, 0.0f };
 	glUniform4fv(U(u_gbParams), 1, refl);
+	float boundReflW = reflW;
 
 	setWorldMatrix(atomic->getFrame()->getLTM());
 	setupVertexInput(header);
 
 	InstanceData *inst = header->inst;
 	for(rw::uint32 i = 0; i < header->numMeshes; i++, inst++){
-		rw::Material *m = inst->material;
-		// opaque meshes only; transparency can't occlude reliably, and
-		// alpha-textured foliage must not become a wet-reflective surface
-		if(inst->vertexAlpha || m->color.alpha != 255)
-			continue;
-		if(m->texture && m->texture->raster &&
-		   PLUGINOFFSET(rw::gl3::Gl3Raster, m->texture->raster, rw::gl3::nativeRasterOffset)->hasAlpha)
-			continue;
+		// opaque meshes as-is; alpha meshes are normally excluded
+		// (transparency can't occlude reliably, and alpha-textured
+		// foliage must not become a wet-reflective surface) — except
+		// vehicle glass, which enters with the glass marker so the
+		// reflection pass gives panes a deterministic Fresnel mirror
+		float want = reflW;
+		if(meshHasAlpha(inst)){
+			if(glassReflW <= 0.0f || !meshIsGlass(inst))
+				continue;
+			want = glassReflW;
+		}
+		if(want != boundReflW){
+			float p[4] = { want, 0.0f, 0.0f, 0.0f };
+			glUniform4fv(U(u_gbParams), 1, p);
+			boundReflW = want;
+		}
 		drawInst(header, inst);
 	}
 	teardownVertexInput(header);
@@ -227,13 +256,15 @@ GbufferRender(void)
 			continue;
 
 		// G-buffer normal.w: < 0 = vehicle base reflectivity (negated),
-		// >= 0 = wet-weather reflectivity multiplier. Roads use the game's
-		// own per-model wet-reflection flag; other surfaces get a light
-		// sheen; peds never reflect.
-		float reflW;
-		if(e->IsVehicle())
+		// 0..1.5 = wet-weather reflectivity multiplier, 2 = sea,
+		// 3 = glass. Roads use the game's own per-model wet-reflection
+		// flag; other surfaces get a light sheen; peds never reflect.
+		float reflW, glassReflW = 0.0f;
+		if(e->IsVehicle()){
 			reflW = -0.35f;
-		else if(e->IsPed())
+			if(gbGlassRefl && gbReflections)
+				glassReflW = 3.0f;
+		}else if(e->IsPed())
 			reflW = 0.0f;
 		else if(e->IsBuilding() &&
 		   ((CSimpleModelInfo*)CModelInfo::GetModelInfo(e->GetModelIndex()))->m_wetRoadReflection)
@@ -242,11 +273,11 @@ GbufferRender(void)
 			reflW = 0.25f;
 
 		if(RwObjectGetType(e->m_rwObject) == rpATOMIC)
-			gbufDrawAtomic((rw::Atomic*)e->m_rwObject, reflW);
+			gbufDrawAtomic((rw::Atomic*)e->m_rwObject, reflW, glassReflW);
 		else{
 			rw::Clump *clump = (rw::Clump*)e->m_rwObject;
 			FORLIST(lnk, clump->atomics)
-				gbufDrawAtomic(rw::Atomic::fromClump(lnk), reflW);
+				gbufDrawAtomic(rw::Atomic::fromClump(lnk), reflW, glassReflW);
 		}
 	}
 
@@ -368,13 +399,16 @@ VehicleRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 		rw::SetRenderState(VERTEXALPHA, inst->vertexAlpha || m->color.alpha != 0xFF);
 
 		// materials that carried a matFX env map (paint, chrome) get the
-		// ray traced reflection instead; everything else stays diffuse
+		// ray traced reflection instead; everything else stays diffuse.
+		// glass meshes (the ones the G-buffer marked with the glass
+		// reflW) composite the deterministic Fresnel mirror instead
 		float envScale = 0.0f;
 		MatFX *matfx = MatFX::get(m);
 		if(matfx && matfx->type == MatFX::ENVMAP &&
 		   matfx->fx[0].env.tex && matfx->fx[0].env.coefficient > 0.0f)
 			envScale = 1.0f;
-		float vehParams[4] = { envScale, 0.0f, 0.0f, 0.0f };
+		float glass = (gbGlassRefl && meshIsGlass(inst)) ? 1.0f : 0.0f;
+		float vehParams[4] = { envScale, glass, 0.0f, 0.0f };
 		glUniform4fv(U(u_rtgiVehParams), 1, vehParams);
 
 		drawInst(header, inst);
