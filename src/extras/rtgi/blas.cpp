@@ -628,6 +628,12 @@ BlasGetOrBuild(rw::Geometry *geo, VkCommandBuffer cmd, float emissiveScale)
 		rec.albedo = materialAlbedo(m < geo->matList.numMaterials ? geo->matList.materials[m] : nil);
 		rw::Material *recMat = m < geo->matList.numMaterials ? geo->matList.materials[m] : nil;
 		rec.texSlot = (rec.uvAddr && recMat) ? textureSlot(recMat->texture, cmd) : UINT32_MAX;
+		// sun portals: interiors are sealed shells whose "skylights" are
+		// panes textured with a flat sky fill — rays that hit one count
+		// as having reached the sun (bit 16; slot users mask 0xFFFF)
+		if(recMat && recMat->texture &&
+		   strncmp(recMat->texture->name, "skyblue", 7) == 0)
+			rec.texSlot |= 0x10000u;
 		rec.matColor = recMat ?
 			((uint32_t)recMat->color.red | ((uint32_t)recMat->color.green << 8) |
 			 ((uint32_t)recMat->color.blue << 16)) : 0xFFFFFFu;

@@ -231,6 +231,9 @@ InteropCreate(int width, int height)
 		return false;
 	if(!SharedImageCreate(&gInterop.reflOutput, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, GL_RGBA16F, true))
 		return false;
+	// half-res: volumetrics are low-frequency; upsampled bilinearly in GL
+	if(!SharedImageCreate(&gInterop.volOutput, width/2, height/2, VK_FORMAT_R16G16B16A16_SFLOAT, GL_RGBA16F, true))
+		return false;
 	if(!sharedSemaphoreCreate(&gInterop.semGbufDone, &gInterop.glSemGbufDone))
 		return false;
 	if(!sharedSemaphoreCreate(&gInterop.semRtDone, &gInterop.glSemRtDone))
@@ -269,6 +272,7 @@ InteropDestroy(void)
 	SharedImageDestroy(&gInterop.aoOutput);
 	SharedImageDestroy(&gInterop.giOutput);
 	SharedImageDestroy(&gInterop.reflOutput);
+	SharedImageDestroy(&gInterop.volOutput);
 	SharedImageDestroy(&gInterop.gbNormal);
 	SharedImageDestroy(&gInterop.gbDepth);
 	memset(&gInterop, 0, sizeof(gInterop));

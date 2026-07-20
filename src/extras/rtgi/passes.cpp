@@ -28,6 +28,8 @@
 #include "shaders/obj/atrous_comp.inc"
 #include "shaders/obj/refl_comp.inc"
 #include "shaders/obj/refltemporal_comp.inc"
+#include "shaders/obj/volum_comp.inc"
+#include "shaders/obj/volblur_comp.inc"
 
 namespace RayTracedGI {
 
@@ -203,6 +205,32 @@ static int gReflAccumIndex;
 static bool gReflImagesInitialised;
 static float gReflPrevCam[16];
 static bool gReflHavePrevCam;
+
+// volumetric light shafts (half-res march, interiors)
+struct VolPushConstants
+{
+	float camPos[4];
+	float camRight[4];
+	float camUp[4];
+	float camFwd[4];
+	float sunDir[4];
+	float sunColor[4];	// w = strength
+	uint32_t size[2];
+	uint32_t frame;
+	uint32_t steps;
+	float maxDist;
+	float pad[3];
+};
+static VkDescriptorSetLayout gVolSetLayout;
+static VkPipelineLayout gVolPipeLayout;
+static VkPipeline gVolPipeline;
+static VkDescriptorSet gVolDescSet;
+static VkDescriptorSetLayout gVolBlurSetLayout;
+static VkPipelineLayout gVolBlurPipeLayout;
+static VkPipeline gVolBlurPipeline;
+static VkDescriptorSet gVolBlurDescSet;
+static GpuImage gVolRaw;	// pre-blur march output (half res)
+static bool gVolRawInitialised;
 
 static int gAccumIndex;
 static bool gGiImagesInitialised;	// UNDEFINED->GENERAL done
@@ -525,6 +553,84 @@ PassesInit(void)
 		return false;
 	}
 
+	// --- volumetric light shafts -----------------------------------------
+
+	{
+	VkDescriptorSetLayoutBinding b[4] = {};
+	VkDescriptorType types[4] = {
+		VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,		// volImage
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,	// gbDepth
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,		// records (portals)
+	};
+	for(int i = 0; i < 4; i++){
+		b[i].binding = i;
+		b[i].descriptorType = types[i];
+		b[i].descriptorCount = 1;
+		b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	}
+	VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+	li.bindingCount = 4;
+	li.pBindings = b;
+	if(vkCreateDescriptorSetLayout(gVk.device, &li, nullptr, &gVolSetLayout) != VK_SUCCESS)
+		return false;
+	VkPushConstantRange pcr = {};
+	pcr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	pcr.size = sizeof(VolPushConstants);
+	VkPipelineLayoutCreateInfo pli = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+	pli.setLayoutCount = 1;
+	pli.pSetLayouts = &gVolSetLayout;
+	pli.pushConstantRangeCount = 1;
+	pli.pPushConstantRanges = &pcr;
+	if(vkCreatePipelineLayout(gVk.device, &pli, nullptr, &gVolPipeLayout) != VK_SUCCESS)
+		return false;
+	gVolPipeline = createComputePipeline(volum_comp_spv, sizeof(volum_comp_spv), gVolPipeLayout);
+	if(gVolPipeline == VK_NULL_HANDLE)
+		return false;
+	VkDescriptorSetAllocateInfo dsi = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+	dsi.descriptorPool = gDescPool;
+	dsi.descriptorSetCount = 1;
+	dsi.pSetLayouts = &gVolSetLayout;
+	if(vkAllocateDescriptorSets(gVk.device, &dsi, &gVolDescSet) != VK_SUCCESS)
+		return false;
+	}
+
+	// --- volumetric blur -------------------------------------------------
+
+	{
+	VkDescriptorSetLayoutBinding b[2] = {};
+	for(int i = 0; i < 2; i++){
+		b[i].binding = i;
+		b[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		b[i].descriptorCount = 1;
+		b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	}
+	VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+	li.bindingCount = 2;
+	li.pBindings = b;
+	if(vkCreateDescriptorSetLayout(gVk.device, &li, nullptr, &gVolBlurSetLayout) != VK_SUCCESS)
+		return false;
+	VkPushConstantRange pcr = {};
+	pcr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	pcr.size = 4*sizeof(uint32_t);
+	VkPipelineLayoutCreateInfo pli = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+	pli.setLayoutCount = 1;
+	pli.pSetLayouts = &gVolBlurSetLayout;
+	pli.pushConstantRangeCount = 1;
+	pli.pPushConstantRanges = &pcr;
+	if(vkCreatePipelineLayout(gVk.device, &pli, nullptr, &gVolBlurPipeLayout) != VK_SUCCESS)
+		return false;
+	gVolBlurPipeline = createComputePipeline(volblur_comp_spv, sizeof(volblur_comp_spv), gVolBlurPipeLayout);
+	if(gVolBlurPipeline == VK_NULL_HANDLE)
+		return false;
+	VkDescriptorSetAllocateInfo dsi = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+	dsi.descriptorPool = gDescPool;
+	dsi.descriptorSetCount = 1;
+	dsi.pSetLayouts = &gVolBlurSetLayout;
+	if(vkAllocateDescriptorSets(gVk.device, &dsi, &gVolBlurDescSet) != VK_SUCCESS)
+		return false;
+	}
+
 	// --- reflection temporal/spatial filter ------------------------------
 
 	{
@@ -589,6 +695,9 @@ PassesInit(void)
 	   !ImageCreate(&gReflAccum[0], rw, rh, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage) ||
 	   !ImageCreate(&gReflAccum[1], rw, rh, VK_FORMAT_R16G16B16A16_SFLOAT, giUsage))
 		return false;
+	if(!ImageCreate(&gVolRaw, gInterop.volOutput.width, gInterop.volOutput.height,
+	   VK_FORMAT_R16G16B16A16_SFLOAT, giUsage))
+		return false;
 
 	// --- a-trous denoiser ------------------------------------------------
 
@@ -641,6 +750,20 @@ void
 PassesShutdown(void)
 {
 	BufferDestroy(&gLightBuf);
+	if(gVolPipeline) vkDestroyPipeline(gVk.device, gVolPipeline, nullptr);
+	if(gVolPipeLayout) vkDestroyPipelineLayout(gVk.device, gVolPipeLayout, nullptr);
+	if(gVolSetLayout) vkDestroyDescriptorSetLayout(gVk.device, gVolSetLayout, nullptr);
+	gVolPipeline = VK_NULL_HANDLE;
+	gVolPipeLayout = VK_NULL_HANDLE;
+	gVolSetLayout = VK_NULL_HANDLE;
+	ImageDestroy(&gVolRaw);
+	if(gVolBlurPipeline) vkDestroyPipeline(gVk.device, gVolBlurPipeline, nullptr);
+	if(gVolBlurPipeLayout) vkDestroyPipelineLayout(gVk.device, gVolBlurPipeLayout, nullptr);
+	if(gVolBlurSetLayout) vkDestroyDescriptorSetLayout(gVk.device, gVolBlurSetLayout, nullptr);
+	gVolBlurPipeline = VK_NULL_HANDLE;
+	gVolBlurPipeLayout = VK_NULL_HANDLE;
+	gVolBlurSetLayout = VK_NULL_HANDLE;
+	gVolRawInitialised = false;
 	ImageDestroy(&gReflRaw);
 	ImageDestroy(&gReflAccum[0]);
 	ImageDestroy(&gReflAccum[1]);
@@ -1248,6 +1371,102 @@ PassesFilterReflections(VkCommandBuffer cmd, uint32_t frame, bool resetHistory)
 	memcpy(gReflPrevCam, pc.camPos, sizeof(gReflPrevCam));
 	gReflHavePrevCam = true;
 	gReflAccumIndex = prev;
+}
+
+void
+PassesTraceVolumetrics(VkCommandBuffer cmd, uint32_t frame, float strength)
+{
+	int w = gInterop.volOutput.width, h = gInterop.volOutput.height;
+
+	// first use: internal raw image to GENERAL
+	if(!gVolRawInitialised){
+		VkImageMemoryBarrier bar = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+		bar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		bar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		bar.image = gVolRaw.image;
+		bar.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			0, 0, nullptr, 0, nullptr, 1, &bar);
+		gVolRawInitialised = true;
+	}
+
+	VkAccelerationStructureKHR tlas = TlasHandle();
+	VkWriteDescriptorSetAccelerationStructureKHR asWrite = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
+	asWrite.accelerationStructureCount = 1;
+	asWrite.pAccelerationStructures = &tlas;
+	VkDescriptorImageInfo outInfo = { VK_NULL_HANDLE, gVolRaw.view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo depthInfo = { gInterop.sampler, gInterop.gbDepth.view, VK_IMAGE_LAYOUT_GENERAL };
+	GpuBuffer *records = BlasRecordBuffer();
+	VkDescriptorBufferInfo bufInfo = { records->buf, 0, VK_WHOLE_SIZE };
+
+	VkWriteDescriptorSet writes[4] = {};
+	const VkDescriptorImageInfo *infos[4] = { nullptr, &outInfo, &depthInfo, nullptr };
+	VkDescriptorType types[4] = {
+		VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+	};
+	for(int i = 0; i < 4; i++){
+		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[i].dstSet = gVolDescSet;
+		writes[i].dstBinding = i;
+		writes[i].descriptorCount = 1;
+		writes[i].descriptorType = types[i];
+		writes[i].pImageInfo = infos[i];
+	}
+	writes[0].pNext = &asWrite;
+	writes[3].pBufferInfo = &bufInfo;
+	vkUpdateDescriptorSets(gVk.device, 4, writes, 0, nullptr);
+
+	VolPushConstants pc = {};
+	fillCamera(pc.camPos, pc.camRight, pc.camUp, pc.camFwd);
+	CVector sunDir = CTimeCycle::GetSunDirection();
+	pc.sunDir[0] = sunDir.x; pc.sunDir[1] = sunDir.y; pc.sunDir[2] = sunDir.z;
+	pc.sunDir[3] = sunDir.z > 0.0f ? 1.0f : 0.0f;
+	pc.sunColor[0] = CTimeCycle::GetDirectionalRed();
+	pc.sunColor[1] = CTimeCycle::GetDirectionalGreen();
+	pc.sunColor[2] = CTimeCycle::GetDirectionalBlue();
+	pc.sunColor[3] = strength;
+	pc.size[0] = w; pc.size[1] = h;
+	pc.frame = frame;
+	pc.steps = 8;
+	pc.maxDist = 40.0f;
+
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gVolPipeline);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gVolPipeLayout, 0, 1, &gVolDescSet, 0, nullptr);
+	vkCmdPushConstants(cmd, gVolPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+	vkCmdDispatch(cmd, (w + 7)/8, (h + 7)/8, 1);
+
+	// raw march -> blur -> shared image (kills the jitter dither)
+	VkMemoryBarrier memBarrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+	memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+
+	VkDescriptorImageInfo rawInfo = { VK_NULL_HANDLE, gVolRaw.view, VK_IMAGE_LAYOUT_GENERAL };
+	VkDescriptorImageInfo blurOutInfo = { VK_NULL_HANDLE, gInterop.volOutput.view, VK_IMAGE_LAYOUT_GENERAL };
+	VkWriteDescriptorSet bw[2] = {};
+	const VkDescriptorImageInfo *binfos[2] = { &rawInfo, &blurOutInfo };
+	for(int i = 0; i < 2; i++){
+		bw[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		bw[i].dstSet = gVolBlurDescSet;
+		bw[i].dstBinding = i;
+		bw[i].descriptorCount = 1;
+		bw[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		bw[i].pImageInfo = binfos[i];
+	}
+	vkUpdateDescriptorSets(gVk.device, 2, bw, 0, nullptr);
+
+	uint32_t bpc[4] = { (uint32_t)w, (uint32_t)h, 0, 0 };
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gVolBlurPipeline);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gVolBlurPipeLayout, 0, 1, &gVolBlurDescSet, 0, nullptr);
+	vkCmdPushConstants(cmd, gVolBlurPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(bpc), bpc);
+	vkCmdDispatch(cmd, (w + 7)/8, (h + 7)/8, 1);
 }
 
 void

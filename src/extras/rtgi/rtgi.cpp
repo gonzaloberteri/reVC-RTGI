@@ -70,6 +70,9 @@ bool gbReflFilter = true;
 bool gbGlassRefl = true;
 bool gbDumpTex;		// dev: log distinct world texture names (dumptex=1)
 bool gbWaterCaustics = true;
+bool gbVolumetrics = true;
+float gfVolStrength = 1.0f;
+bool gbVolAlways;	// dev: run the volumetric pass outdoors too
 float gfEmissiveBoost = 1.0f;
 bool gbGI2 = true;
 bool gbPhotoMode;
@@ -103,11 +106,13 @@ static bool gWantExplosions;
 // a VK submit happened this frame and GL must signal it back, regardless of
 // what the debug menu did to the toggles in between
 static bool gFrameSubmitted;
+// the volumetric pass ran this frame (composite blit keys off this)
+static bool gVolTraced;
 
 // GPU pass timing: timestamps written along the frame's command buffer,
 // read back after the frame fence, averaged into the telemetry line
 enum {
-	TS_BEGIN, TS_TLAS, TS_AO, TS_GI, TS_DENOISE, TS_REFL, TS_REFLT,
+	TS_BEGIN, TS_TLAS, TS_AO, TS_GI, TS_DENOISE, TS_REFL, TS_REFLT, TS_VOL,
 	TS_COUNT
 };
 static VkQueryPool gTsPool;
@@ -407,6 +412,9 @@ readConfigFile(void)
 		else if(sscanf(line, "glassrefl=%d", &ival) == 1) gbGlassRefl = ival != 0;
 		else if(sscanf(line, "dumptex=%d", &ival) == 1) gbDumpTex = ival != 0;
 		else if(sscanf(line, "watercaustics=%d", &ival) == 1) gbWaterCaustics = ival != 0;
+		else if(sscanf(line, "volumetrics=%d", &ival) == 1) gbVolumetrics = ival != 0;
+		else if(sscanf(line, "volstrength=%f", &fval) == 1) gfVolStrength = fval;
+		else if(sscanf(line, "volalways=%d", &ival) == 1) gbVolAlways = ival != 0;
 		else if(sscanf(line, "emissive=%f", &fval) == 1) gfEmissiveBoost = fval;
 		else if(sscanf(line, "gi2=%d", &ival) == 1) gbGI2 = ival != 0;
 		else if(sscanf(line, "photo=%d", &ival) == 1) gbPhotoMode = ival != 0;
@@ -639,6 +647,19 @@ RenderFrame(void)
 			}
 			if(timing) timestamp(gVk.cmdBuf, TS_REFLT);
 			gResetGIHistory = false;
+
+			// volumetric shafts: interiors only (cost gate), sun up
+			if(gbVolumetrics && (gbVolAlways || CGame::currArea != AREA_MAIN_MAP) &&
+			   CTimeCycle::GetSunDirection().z > 0.0f){
+				VkImageMemoryBarrier volToGeneral = toGeneral;
+				volToGeneral.image = gInterop.volOutput.image;
+				vkCmdPipelineBarrier(gVk.cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+					0, 0, nullptr, 0, nullptr, 1, &volToGeneral);
+				PassesTraceVolumetrics(gVk.cmdBuf, frameCounter, gfVolStrength);
+				gVolTraced = true;
+			}else
+				gVolTraced = false;
+			if(timing) timestamp(gVk.cmdBuf, TS_VOL);
 		}
 
 		VkImageMemoryBarrier afterTrace = toGeneral;
@@ -690,11 +711,12 @@ RenderFrame(void)
 			EnvGlassMeshCount(),
 			CTimer::GetIsPaused(), FrontEndMenuManager.m_bMenuActive, CDraw::FadeValue);
 		if(gTsFrames > 0){
-			RtgiLog("RTGI: GPU ms avg over %u frames: blas/tlas %.2f, ao %.2f, gi %.2f, denoise %.2f, refl %.2f, reflt %.2f\n",
+			RtgiLog("RTGI: GPU ms avg over %u frames: blas/tlas %.2f, ao %.2f, gi %.2f, denoise %.2f, refl %.2f, reflt %.2f, vol %.2f\n",
 				gTsFrames,
 				gTsAccumMs[TS_TLAS]/gTsFrames, gTsAccumMs[TS_AO]/gTsFrames,
 				gTsAccumMs[TS_GI]/gTsFrames, gTsAccumMs[TS_DENOISE]/gTsFrames,
-				gTsAccumMs[TS_REFL]/gTsFrames, gTsAccumMs[TS_REFLT]/gTsFrames);
+				gTsAccumMs[TS_REFL]/gTsFrames, gTsAccumMs[TS_REFLT]/gTsFrames,
+				gTsAccumMs[TS_VOL]/gTsFrames);
 			memset(gTsAccumMs, 0, sizeof(gTsAccumMs));
 			gTsFrames = 0;
 		}
@@ -757,6 +779,42 @@ DebugRender(void)
 		return;
 	}
 
+	// additive volumetric shaft composite over the finished scene (before
+	// the HUD); the half-res buffer upsamples bilinearly
+	if(gVolTraced){
+		GLint prevProgram, prevVAO, prevActiveTex, prevTex0;
+		GLboolean depthWasOn = glIsEnabled(GL_DEPTH_TEST);
+		GLboolean blendWasOn = glIsEnabled(GL_BLEND);
+		GLint prevSrc, prevDst;
+		glGetIntegerv(GL_CURRENT_PROGRAM, &prevProgram);
+		glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVAO);
+		glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActiveTex);
+		glGetIntegerv(GL_BLEND_SRC_RGB, &prevSrc);
+		glGetIntegerv(GL_BLEND_DST_RGB, &prevDst);
+		glActiveTexture(GL_TEXTURE0);
+		glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex0);
+
+		glDisable(GL_DEPTH_TEST);
+		glEnable(GL_BLEND);
+		glBlendFunc(GL_ONE, GL_ONE);
+		glUseProgram(blitProgram);
+		glBindVertexArray(blitVAO);
+		glBindTexture(GL_TEXTURE_2D, gInterop.volOutput.glTexture);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glUniform1i(glGetUniformLocation(blitProgram, "tex"), 0);
+		glUniform1i(glGetUniformLocation(blitProgram, "u_mode"), 0);
+		glDrawArrays(GL_TRIANGLES, 0, 3);
+
+		glBlendFunc(prevSrc, prevDst);
+		if(!blendWasOn) glDisable(GL_BLEND);
+		if(depthWasOn) glEnable(GL_DEPTH_TEST);
+		glBindTexture(GL_TEXTURE_2D, prevTex0);
+		glActiveTexture(prevActiveTex);
+		glBindVertexArray(prevVAO);
+		glUseProgram(prevProgram);
+	}
+
 	if(gnDebugView != DEBUGVIEW_OFF){
 		GLint prevProgram, prevVAO, prevActiveTex, prevTex0;
 		GLint prevViewport[4];
@@ -782,6 +840,7 @@ DebugRender(void)
 		case DEBUGVIEW_SUNVIS: tex = gInterop.aoOutput.glTexture; mode = 4; break;
 		case DEBUGVIEW_GI: tex = gInterop.giOutput.glTexture; mode = 0; break;
 		case DEBUGVIEW_REFL: tex = gInterop.reflOutput.glTexture; mode = 0; break;
+		case DEBUGVIEW_VOL: tex = gInterop.volOutput.glTexture; mode = 0; break;
 		}
 		glUseProgram(blitProgram);
 		glBindVertexArray(blitVAO);
@@ -841,7 +900,7 @@ MoonDirection(float dir[3])
 void
 AddDebugMenuEntries(void)
 {
-	static const char *debugViews[] = { "Off", "Interop", "RT Normals", "RT Depth", "RT Instances", "AO", "GB Normal", "GB Depth", "Sun Vis", "GI", "Reflections" };
+	static const char *debugViews[] = { "Off", "Interop", "RT Normals", "RT Depth", "RT Instances", "AO", "GB Normal", "GB Depth", "Sun Vis", "GI", "Reflections", "Volumetrics" };
 	DebugMenuAddVarBool8("RTGI", "Ray traced GI", (int8_t*)&gbRayTracedGI, nil);
 	DebugMenuAddVar("RTGI", "Debug view", &gnDebugView, nil, 1, 0, DEBUGVIEW_MAX-1, debugViews);
 	DebugMenuAddVarBool8("RTGI", "RT ambient occlusion", (int8_t*)&gbAOEnable, nil);
@@ -855,6 +914,8 @@ AddDebugMenuEntries(void)
 	DebugMenuAddVarBool8("RTGI", "Reflection filter", (int8_t*)&gbReflFilter, nil);
 	DebugMenuAddVarBool8("RTGI", "Glass reflections", (int8_t*)&gbGlassRefl, nil);
 	DebugMenuAddVarBool8("RTGI", "Water caustics", (int8_t*)&gbWaterCaustics, nil);
+	DebugMenuAddVarBool8("RTGI", "Volumetric shafts", (int8_t*)&gbVolumetrics, nil);
+	DebugMenuAddVar("RTGI", "Volumetric strength", &gfVolStrength, nil, 0.05f, 0.0f, 2.0f);
 	DebugMenuAddVar("RTGI", "Emissive boost", &gfEmissiveBoost, nil, 0.25f, 0.0f, 8.0f);
 	DebugMenuAddVarBool8("RTGI", "GI second bounce", (int8_t*)&gbGI2, nil);
 	DebugMenuAddVarBool8("RTGI", "Photo mode (accumulate)", (int8_t*)&gbPhotoMode, nil);

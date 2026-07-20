@@ -68,6 +68,16 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
   (VC world models also carry no matFX env maps; both signals dead ends,
   the material-translucency test is the real one). Glass-marked mesh
   count rides the telemetry line; `dumptex=1` logs texture names (dev)
+- **Interior light shafts** — inside interiors (area != 0, sun up) a
+  half-res pass marches the view ray (8 jittered steps) tracing sun
+  visibility per step; interiors are sealed shells, so panes textured
+  with the flat sky fill ("skyblue") are marked as SUN PORTALS in the
+  BLAS records (texSlot bit 16 — slot consumers mask 0xFFFF) and count
+  as reaching the sun. A 3x3 blur kills the jitter dither; the result
+  composites additively before the HUD. Scatter = lit path length ×
+  0.12/m × forward phase. `volumetrics=`/`volstrength=` (+`volalways=`
+  dev key to run outdoors); debug view "Volumetrics"; ~1.8 ms at 1080p
+  interior-only
 - **Sea reflections** — the water surface is re-rendered into the G-buffer
   (via a librw im3d shader-override hook, patch in docs/librw-rtgi.patch)
   and the reflection pass mirrors the actual scene off it with a

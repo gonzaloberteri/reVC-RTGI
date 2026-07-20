@@ -1,0 +1,119 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+// Volumetric light shafts: march the view ray at half resolution, tracing a
+// sun-visibility ray per step. Under an opening (mall skylight, doorway) the
+// steps see the sun and the air lights up; under a ceiling they do not.
+// Alpha-tested glass (skylight panes) traverses stochastically, so panes
+// pass most light. Jitter is a fixed interleaved-gradient pattern (stable
+// per pixel, no temporal accumulation needed at this frequency).
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform accelerationStructureEXT tlas;
+layout(binding = 1, rgba16f) uniform image2D volImage;	// half res
+layout(binding = 2) uniform sampler2D gbDepth;		// full res
+
+struct GeomRecord {
+	uint64_t vtx;
+	uint64_t idx;
+	uint64_t uv;
+	uint albedo;
+	uint emissive;
+	uint texSlot;	// low 16 bits slot; bit 16 = sun portal (skylight pane)
+	uint matColor;
+};
+layout(binding = 3, std430) readonly buffer Records { GeomRecord records[]; };
+
+layout(push_constant) uniform PC {
+	vec4 camPos;
+	vec4 camRight;	// w = viewWindow.x
+	vec4 camUp;	// w = viewWindow.y
+	vec4 camFwd;
+	vec4 sunDir;	// xyz to sun, w > 0 when up
+	vec4 sunColor;	// rgb; w = strength
+	uvec2 size;	// half-res extent
+	uint frame;
+	uint steps;
+	float maxDist;	// march cap, world units
+	float pad0, pad1, pad2;
+} pc;
+
+uint pcg(inout uint state)
+{
+	state = state*747796405u + 2891336453u;
+	uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+	return (word >> 22u) ^ word;
+}
+
+float rnd(inout uint state)
+{
+	return float(pcg(state)) / 4294967296.0;
+}
+
+#define TRAVERSE(rq) \
+	while(rayQueryProceedEXT(rq)){ \
+		if(rayQueryGetIntersectionTypeEXT(rq, false) == gl_RayQueryCandidateIntersectionTriangleEXT \
+		   && rnd(state) < 0.45) \
+			rayQueryConfirmIntersectionEXT(rq); \
+	}
+
+void main()
+{
+	uvec2 px = gl_GlobalInvocationID.xy;
+	if(px.x >= pc.size.x || px.y >= pc.size.y)
+		return;
+
+	vec2 uv = (vec2(px) + 0.5) / vec2(pc.size);
+	float depth = texture(gbDepth, uv).r;
+	if(depth <= 0.0){
+		// no geometry: inside an interior that means void (outside the
+		// shell) — lighting it floods the screen white
+		imageStore(volImage, ivec2(px), vec4(0.0));
+		return;
+	}
+
+	float u = uv.x*2.0 - 1.0;
+	float v = uv.y*2.0 - 1.0;
+	vec3 viewRay = pc.camFwd.xyz - pc.camRight.xyz*(u*pc.camRight.w) + pc.camUp.xyz*(v*pc.camUp.w);
+	float vlen = length(viewRay);
+
+	// march extent in depth units, capped in world units
+	float sMax = min(depth, pc.maxDist/vlen);
+
+	// stable per-pixel jitter (interleaved gradient noise)
+	float ign = fract(52.9829189*fract(0.06711056*float(px.x) + 0.00583715*float(px.y)));
+
+	uint state = px.x*7919u + px.y*104729u + 1u;
+	vec3 sun = normalize(pc.sunDir.xyz);
+
+	float accum = 0.0;
+	for(uint i = 0u; i < pc.steps; i++){
+		float s = (float(i) + ign)/float(pc.steps) * sMax;
+		vec3 pos = pc.camPos.xyz + viewRay*s;
+		rayQueryEXT rq;
+		rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT,
+			0xFFu, pos, 0.05, sun, 500.0);
+		TRAVERSE(rq)
+		if(rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT)
+			accum += 1.0;
+		else{
+			// interiors are sealed shells: a hit on a sun-portal pane
+			// (flat-sky skylight texture) counts as reaching the sun
+			uint ri = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true))
+				+ uint(rayQueryGetIntersectionGeometryIndexEXT(rq, true));
+			if((records[ri].texSlot & 0x10000u) != 0u)
+				accum += 1.0;
+		}
+	}
+	accum /= float(pc.steps);
+
+	// forward-scattering phase: shafts read strongest looking toward the sun
+	float phase = 0.35 + 0.65*pow(max(dot(viewRay/vlen, sun), 0.0), 8.0);
+	// scatter proportional to the sun-lit path length (meters x density);
+	// a few lit meters must already read as a visible column
+	float litLen = accum * sMax * vlen;
+	vec3 scatter = pc.sunColor.rgb * min(litLen*0.12*phase*pc.sunColor.w, 1.5);
+	imageStore(volImage, ivec2(px), vec4(scatter, 1.0));
+}

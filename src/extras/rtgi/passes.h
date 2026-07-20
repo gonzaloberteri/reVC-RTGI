@@ -33,6 +33,9 @@ void PassesTraceReflections(VkCommandBuffer cmd, uint32_t frame, bool toRaw);
 // over the raw reflections, output into the shared reflection image
 void PassesFilterReflections(VkCommandBuffer cmd, uint32_t frame, bool resetHistory);
 
+// half-res volumetric light shafts into the shared vol image (interiors)
+void PassesTraceVolumetrics(VkCommandBuffer cmd, uint32_t frame, float strength);
+
 // lights fed to the last GI pass (game point lights + headlight cones)
 uint32_t GiLightCount(void);
 uint32_t GiHeadlightCount(void);

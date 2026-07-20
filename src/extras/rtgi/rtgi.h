@@ -19,6 +19,7 @@ enum eDebugView {
 	DEBUGVIEW_SUNVIS,	// ray traced sun visibility
 	DEBUGVIEW_GI,		// accumulated diffuse GI radiance
 	DEBUGVIEW_REFL,		// reflections
+	DEBUGVIEW_VOL,		// volumetric light shafts
 	DEBUGVIEW_MAX
 };
 

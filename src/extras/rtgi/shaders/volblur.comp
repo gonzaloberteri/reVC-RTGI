@@ -1,0 +1,34 @@
+#version 460
+
+// 3x3 box blur over the half-res volumetric buffer: the march jitter's
+// structured dither smooths out; shafts are low-frequency so no edge
+// awareness is needed.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0, rgba16f) uniform readonly image2D volRaw;
+layout(binding = 1, rgba16f) uniform writeonly image2D volOut;
+
+layout(push_constant) uniform PC {
+	uvec2 size;
+	uint pad0, pad1;
+} pc;
+
+void main()
+{
+	ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+	if(px.x >= int(pc.size.x) || px.y >= int(pc.size.y))
+		return;
+
+	vec3 sum = vec3(0.0);
+	float wsum = 0.0;
+	for(int dy = -1; dy <= 1; dy++)
+	for(int dx = -1; dx <= 1; dx++){
+		ivec2 q = px + ivec2(dx, dy);
+		if(q.x < 0 || q.y < 0 || q.x >= int(pc.size.x) || q.y >= int(pc.size.y))
+			continue;
+		sum += imageLoad(volRaw, q).rgb;
+		wsum += 1.0;
+	}
+	imageStore(volOut, px, vec4(sum/wsum, 1.0));
+}
