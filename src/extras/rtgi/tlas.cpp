@@ -108,7 +108,10 @@ pedSlotInit(PedSlot *s)
 	rec.albedo = 0xFF707070u;	// generic clothing gray for GI bounces
 	rec.emissive = 0;
 	rec.texSlot = UINT32_MAX;
-	rec.matColor = 0xFFFFFFu;
+	// alpha byte matters: traversal commits non-opaque candidates by
+	// matColor alpha — ped BLASes are opaque today, but a 0 here would
+	// silently vanish peds from rays if that ever changes
+	rec.matColor = 0xFFFFFFFFu;
 	s->record = BlasAllocRecord(rec);
 	if(s->record == UINT32_MAX)
 		return false;

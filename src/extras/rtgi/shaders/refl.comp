@@ -154,8 +154,12 @@ void main()
 		refl = clamp(-nr.w * mix(0.08, 2.0, fresnel), 0.0, 0.75);
 	else if(nr.w > 2.5)
 		// glass pane: smooth dielectric, deterministic mirror shaped by
-		// Fresnel — faint head-on (F0 ~ 0.04), full at grazing
-		refl = mix(0.04, 0.95, fresnel);
+		// Fresnel. F0 is boosted well above the physical 0.04 — at 4%
+		// a player square to a storefront cannot see their own
+		// reflection at all (user-reported); 0.16 reads as a proper
+		// ghost image head-on and still ramps to a full mirror at
+		// grazing
+		refl = mix(0.16, 0.95, fresnel);
 	else if(nr.w > 1.5){
 		// the sea is always reflective, mirror toward the horizon —
 		// but at night the sky it mirrors is unlit, and the fresnel

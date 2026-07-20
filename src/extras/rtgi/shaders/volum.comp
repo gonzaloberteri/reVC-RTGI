@@ -111,9 +111,13 @@ void main()
 
 	// forward-scattering phase: shafts read strongest looking toward the sun
 	float phase = 0.35 + 0.65*pow(max(dot(viewRay/vlen, sun), 0.0), 8.0);
-	// scatter proportional to the sun-lit path length (meters x density);
-	// a few lit meters must already read as a visible column
+	// scatter saturates exponentially with the sun-lit path length: a few
+	// lit meters already read as a beam, but a corridor-length lit path
+	// (the mall concourse runs under a near-continuous skylight) must NOT
+	// wash the frame out — the old linear term clamped at 1.5x sun and
+	// flooded exactly that view white
 	float litLen = accum * sMax * vlen;
-	vec3 scatter = pc.sunColor.rgb * min(litLen*0.12*phase*pc.sunColor.w, 1.5);
+	vec3 scatter = pc.sunColor.rgb * pc.sunColor.w * phase
+		* 0.45 * (1.0 - exp(-litLen*0.25));
 	imageStore(volImage, ivec2(px), vec4(scatter, 1.0));
 }
