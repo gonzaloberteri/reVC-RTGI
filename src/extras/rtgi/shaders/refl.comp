@@ -129,9 +129,15 @@ void main()
 		// glass pane: smooth dielectric, deterministic mirror shaped by
 		// Fresnel — faint head-on (F0 ~ 0.04), full at grazing
 		refl = mix(0.04, 0.95, fresnel);
-	else if(nr.w > 1.5)
-		// the sea is always reflective, mirror toward the horizon
+	else if(nr.w > 1.5){
+		// the sea is always reflective, mirror toward the horizon —
+		// but at night the sky it mirrors is unlit, and the fresnel
+		// term then only DARKENS the water (any spatial variation in
+		// it reads as banding), so ease the mirror strength down
 		refl = mix(0.07, 0.9, fresnel);
+		if(pc.sunDir.w <= 0.0)
+			refl *= 0.3;
+	}
 	else
 		// wet roads: faint sheen looking straight down, mirror at grazing
 		refl = clamp(pc.wetness * clamp(normal.z, 0.0, 1.0) * nr.w * mix(0.06, 0.85, fresnel), 0.0, 0.75);
