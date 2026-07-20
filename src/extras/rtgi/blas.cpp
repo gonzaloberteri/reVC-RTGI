@@ -634,9 +634,12 @@ BlasGetOrBuild(rw::Geometry *geo, VkCommandBuffer cmd, float emissiveScale)
 		if(recMat && recMat->texture &&
 		   strncmp(recMat->texture->name, "skyblue", 7) == 0)
 			rec.texSlot |= 0x10000u;
+		// alpha rides in the top byte: the traversal loops commit non-opaque
+		// candidates with probability texAlpha*matAlpha, so leaf cutouts pass
+		// through instead of reflecting as black quads
 		rec.matColor = recMat ?
 			((uint32_t)recMat->color.red | ((uint32_t)recMat->color.green << 8) |
-			 ((uint32_t)recMat->color.blue << 16)) : 0xFFFFFFu;
+			 ((uint32_t)recMat->color.blue << 16) | ((uint32_t)recMat->color.alpha << 24)) : 0xFFFFFFFFu;
 		// night-model materials emit their own (mean) color, but only the
 		// bright ones (neon tubes, lit windows) — large dim facade surfaces
 		// of night meshes must not become area lights, and emission scales

@@ -86,11 +86,36 @@ vec3 unpackAlbedo(uint c)
 	return vec3(float(c & 255u), float((c >> 8) & 255u), float((c >> 16) & 255u)) / 255.0;
 }
 
-// non-opaque (alpha-tested foliage) candidates pass through stochastically
+// non-opaque candidates (alpha-tested foliage, translucent glass) commit
+// with probability = their real coverage at the hit UV (texture alpha x
+// material alpha) so leaf cutouts pass through instead of bouncing black
+float candidateAlpha(rayQueryEXT rq)
+{
+	uint inst = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false));
+	uint geomIdx = uint(rayQueryGetIntersectionGeometryIndexEXT(rq, false));
+	GeomRecord rec = records[inst + geomIdx];
+	float a = float((rec.matColor >> 24) & 255u) / 255.0;
+	uint slot = rec.texSlot & 0xFFFFu;
+	if(slot != 0xFFFFu && rec.uv != uint64_t(0)){
+		uint prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, false));
+		UintBuf ib = UintBuf(rec.idx);
+		uint i0 = ib.u[prim*3u+0u];
+		uint i1 = ib.u[prim*3u+1u];
+		uint i2 = ib.u[prim*3u+2u];
+		vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rq, false);
+		FloatBuf uvb = FloatBuf(rec.uv);
+		vec2 huv = vec2(uvb.f[i0*2u], uvb.f[i0*2u+1u])*(1.0 - bary.x - bary.y)
+			+ vec2(uvb.f[i1*2u], uvb.f[i1*2u+1u])*bary.x
+			+ vec2(uvb.f[i2*2u], uvb.f[i2*2u+1u])*bary.y;
+		a *= textureLod(texCache[nonuniformEXT(slot)], huv, 0.0).a;
+	}
+	return a;
+}
+
 #define TRAVERSE(rq) \
 	while(rayQueryProceedEXT(rq)){ \
 		if(rayQueryGetIntersectionTypeEXT(rq, false) == gl_RayQueryCandidateIntersectionTriangleEXT \
-		   && rnd(state) < 0.45) \
+		   && rnd(state) < candidateAlpha(rq)) \
 			rayQueryConfirmIntersectionEXT(rq); \
 	}
 
