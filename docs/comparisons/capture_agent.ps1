@@ -113,13 +113,8 @@ function Wait-ForInit([int]$timeoutSec = 70) {
 
 # ---- read job -------------------------------------------------------------
 
-$job = @{}
-foreach ($line in (Get-Content $JobFile)) {
-    $i = $line.IndexOf('=')
-    if ($i -gt 0) { $job[$line.Substring(0, $i)] = $line.Substring($i + 1) }
-}
-$mode = $job['mode']
-$seconds = [int]($job['seconds'] + 0); if ($seconds -le 0) { $seconds = 90 }
+# transcript for post-mortem (the orchestrator only sees the done marker)
+try { Start-Transcript -Path 'C:\Users\pc\capture_agent.log' -Force | Out-Null } catch {}
 
 if (Test-Path $FramesDir) { Remove-Item $FramesDir -Recurse -Force }
 New-Item -ItemType Directory -Path $FramesDir | Out-Null
@@ -127,6 +122,15 @@ New-Item -ItemType Directory -Path $FramesDir | Out-Null
 $result = 'fail'
 $detail = ''
 try {
+    $job = @{}
+    foreach ($line in (Get-Content $JobFile)) {
+        $i = $line.IndexOf('=')
+        if ($i -gt 0) { $job[$line.Substring(0, $i)] = $line.Substring($i + 1) }
+    }
+    Write-Host ('job mode=' + $job['mode'])
+    $mode = $job['mode']
+    $seconds = 90; if ($job['seconds']) { $seconds = [int]$job['seconds'] }
+
     Stop-Game
     Remove-Item (Join-Path $GameDir 'rtgi_shot_*.bmp') -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $GameDir 'rtgi.log') -ErrorAction SilentlyContinue
@@ -140,9 +144,11 @@ try {
 
     if ($mode -eq 'raster' -or $mode -eq 'still') {
         $en = 1; if ($mode -eq 'raster') { $en = 0 }
-        $sf = [int]($job['shotframes'] + 0); if ($sf -le 0) { $sf = 250 }
+        $sf = 250; if ($job['shotframes']) { $sf = [int]$job['shotframes'] }
         Set-Content -Path (Join-Path $GameDir 'rtgi_config.txt') -Value (@("enabled=$en") + $sceneKeys + @("shotframes=$sf")) -Encoding ascii
+        Write-Host 'launching game (still)'
         Start-Process -FilePath (Join-Path $GameDir 'reVC.exe') -WorkingDirectory $GameDir -WindowStyle Minimized
+        Write-Host 'launched; sleeping'
         Start-Sleep -Seconds $seconds
         Stop-Game
         Start-Sleep -Seconds 2
@@ -153,12 +159,12 @@ try {
         } else { $detail = 'no screenshot produced' }
     }
     elseif ($mode -eq 'gif') {
-        $gifShotFrames = [int]($job['gifshotframes'] + 0); if ($gifShotFrames -le 0) { $gifShotFrames = 2 }
-        $gifSettle = [int]($job['gifsettle'] + 0); if ($gifSettle -le 0) { $gifSettle = 8 }
-        $gifSeconds = [int]($job['gifseconds'] + 0); if ($gifSeconds -le 0) { $gifSeconds = 25 }
-        $gifMaxFrames = [int]($job['gifmaxframes'] + 0); if ($gifMaxFrames -le 0) { $gifMaxFrames = 54 }
-        $gifEveryN = [int]($job['gifeveryn'] + 0); if ($gifEveryN -le 0) { $gifEveryN = 2 }
-        $gifPollMs = [int]($job['gifpollms'] + 0); if ($gifPollMs -le 0) { $gifPollMs = 70 }
+        $gifShotFrames = 2; if ($job['gifshotframes']) { $gifShotFrames = [int]$job['gifshotframes'] }
+        $gifSettle = 8; if ($job['gifsettle']) { $gifSettle = [int]$job['gifsettle'] }
+        $gifSeconds = 25; if ($job['gifseconds']) { $gifSeconds = [int]$job['gifseconds'] }
+        $gifMaxFrames = 54; if ($job['gifmaxframes']) { $gifMaxFrames = [int]$job['gifmaxframes'] }
+        $gifEveryN = 2; if ($job['gifeveryn']) { $gifEveryN = [int]$job['gifeveryn'] }
+        $gifPollMs = 70; if ($job['gifpollms']) { $gifPollMs = [int]$job['gifpollms'] }
 
         # boot with shotframes=0 (dense dumps at boot livelock the game);
         # arm dumping via config hot-reload once the scene settles
@@ -225,5 +231,7 @@ try {
     $detail = $_.Exception.Message
 } finally {
     Stop-Game
+    if (-not (Test-Path $FramesDir)) { New-Item -ItemType Directory -Path $FramesDir | Out-Null }
     Set-Content -Path $DoneFile -Value @("result=$result", "detail=$detail") -Encoding ascii
+    try { Stop-Transcript | Out-Null } catch {}
 }

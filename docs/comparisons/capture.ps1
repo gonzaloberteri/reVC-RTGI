@@ -110,19 +110,30 @@ function Invoke-Remote([string]$psCommand) {
     ssh $RemoteHost "powershell -NoProfile -Command \`"$psCommand\`""
 }
 
-# one-time per run: push exe + agent, (re)register the capture task
+# one-time per run: push exe + agent, (re)register the capture task.
+# The task action is a spaces-free .cmd wrapper: a quoted /TR value does
+# not survive the two argv layers between here and remote schtasks.
 Invoke-Remote "Stop-Process -Name reVC -Force -EA SilentlyContinue; exit 0" | Out-Null
 if (-not $SkipExe) {
     Write-Host 'pushing exe...'
     scp -q $exe "${RemoteHost}:$rGame/"
 }
 scp -q $agent "${RemoteHost}:$rAgent"
-ssh $RemoteHost "schtasks /Create /TN rtgi-capture /TR `"powershell -ExecutionPolicy Bypass -File C:\Users\pc\capture_agent.ps1`" /SC ONCE /ST 00:00 /F" | Out-Null
+Set-Content -Path (Join-Path $stage 'rtgi_capture.cmd') -Encoding ascii -Value @(
+    '@echo off',
+    'powershell -ExecutionPolicy Bypass -File C:\Users\pc\capture_agent.ps1'
+)
+scp -q (Join-Path $stage 'rtgi_capture.cmd') "${RemoteHost}:C:/Users/pc/rtgi_capture.cmd"
+ssh $RemoteHost 'schtasks /Create /TN rtgi-capture /TR C:\Users\pc\rtgi_capture.cmd /SC ONCE /ST 00:00 /F' | Out-Null
+$q = ssh $RemoteHost 'schtasks /Query /TN rtgi-capture'
+if ("$q" -notmatch 'rtgi-capture') { throw 'rtgi-capture task missing on the box - setup failed' }
 
 function Invoke-RemoteJob([string[]]$jobLines, [int]$timeoutSec) {
     Set-Content -Path (Join-Path $stage 'capture_job.txt') -Value $jobLines -Encoding ascii
     scp -q (Join-Path $stage 'capture_job.txt') "${RemoteHost}:$rGame/capture_job.txt"
     Invoke-Remote "Remove-Item -Recurse -Force $rFrames -EA SilentlyContinue; exit 0" | Out-Null
+    # a stuck previous instance blocks /Run silently - always clear first
+    ssh $RemoteHost 'schtasks /End /TN rtgi-capture' | Out-Null
     ssh $RemoteHost 'schtasks /Run /TN rtgi-capture' | Out-Null
     $deadline = (Get-Date).AddSeconds($timeoutSec)
     while ((Get-Date) -lt $deadline) {
