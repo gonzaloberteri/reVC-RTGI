@@ -28,7 +28,7 @@ GL shaders: `cd src/extras/shaders && sh makeinc_glsl.sh <file>`. RT shaders: `c
 
 ## Autonomous in-game verification (after EVERY change — never commit unverified)
 
-**All runs happen on the test box `192.168.0.209`** — use `pwsh -File docs/remote_test.ps1 -Config "<key=value lines>" -Seconds 95 -OutDir <dir>`. It pushes the fresh exe + config, triggers the `rtgi-run` scheduled task (launches `C:\Users\pc\rtgi_launch.cmd` minimized **in the remote console session** — SSH-spawned GUI processes get no display/GPU), waits, kills `reVC`, and pulls back `rtgi.log` + shots as PNG. Then **look at the images** (Read tool). Judge like a graphics programmer: silhouettes, light direction, noise, ghosting, brightness vs vanilla art direction. Judge lighting changes from **multiple camera angles** — a single angle once hid whole facades flooding the street pink.
+**All runs happen on the test box `192.168.0.209`** — use `powershell -File docs/remote_test.ps1 -Config "<key=value lines>" -Seconds 95 -OutDir <dir>` (no `pwsh` on the dev PC). It pushes the fresh exe + config, triggers the `rtgi-run` scheduled task (launches `C:\Users\pc\rtgi_launch.cmd` minimized **in the remote console session** — SSH-spawned GUI processes get no display/GPU), waits, kills `reVC`, and pulls back `rtgi.log` + shots as PNG. Then **look at the images** (Read tool). Judge like a graphics programmer: silhouettes, light direction, noise, ghosting, brightness vs vanilla art direction. Judge lighting changes from **multiple camera angles** — a single angle once hid whole facades flooding the street pink.
 
 Remote box facts: user `pc`, key-based SSH, default remote shell is **PowerShell 5.1** (no `&&`; scp staged files instead of fighting nested quoting), RTX 3090 (+ an Intel iGPU — GL correctly lands on NVIDIA in the console session), VNC available if a live look is ever needed.
 
@@ -68,16 +68,15 @@ Original backlog #1–#9 all shipped (composites, emissive night models, headlig
 
 ## Backlog (highest value first; when exhausted, invent more and re-polish)
 
-1. **Photo-mode AO accumulation.** Photo mode true-averages GI but AO still shows grain in photo stills — accumulate AO the same way while the camera is still.
-2. **Glass & window specular.** Vehicle windshields are non-opaque in the BLAS (dither in reflections) and building windows have no specular response. Give glass a proper reflective treatment (Fresnel-weighted RT reflection sample, deterministic — not stochastic — for smooth surfaces).
-3. **Moon shadows + night polish.** Sun shadows exist; at night the moon casts nothing. Trace moon visibility at night hours, soft penumbra, subtle intensity. Re-judge night emissive balance after.
-4. **Transient combat lights.** Explosions/gunfire already `AddLight` LIGHT_POINT → likely already feed GI. Verify in combat at night (spawn a fight or scripted explosion via debug); if muzzle flashes/explosions don't visibly bounce, wire them into the GI light set with short decay.
-5. **Interior light shafts.** Blocked on cataloguing interior floor coordinates per `area=` (hotel = save start, area 1; the malibu guess 489.6,-84.5 was wrong). Catalogue a few interiors first (debug-teleport + `area=N` sweep), then add volumetric shafts from windows/doors.
-6. **GI probe fallback** for transparents/particles/water spray (they can't sample the screen-space GI buffers in their forward passes) — a small world-space probe grid updated from the RT results.
-7. **Per-hour art-direction pass** (recurring): AO strength/radius vs hour, giblend vs timecycle at all hours, sun shadow softness vs art, water reflection floor (0.07) at dawn/dusk, wall wet sheen 0.25, road cap 0.75, paint base 0.35.
-8. **Perf revisit** (recurring): rain reflection cost crept 0.83→1.23 ms; texture cache hit 975/1024 before the 2048 bump — consider LRU eviction; ped skinning cost; checkerboard quality at `checker=1`.
-9. **Docs/architecture polish** (recurring): RTGI.md accuracy pass, `docs/comparisons` refresh, baseline refresh.
-10. **Port `docs/comparisons/capture.ps1` to the test box.** It still launches the game locally (needs its restored-off-screen window trick for dense GIF capture). Move the run to 192.168.0.209 like `docs/remote_test.ps1` — the off-screen restore + hot-reload arming logic must run remotely (scp a helper ps1, run it via the scheduled task or a second schtasks entry).
+1. **Glass & window specular.** Vehicle windshields are non-opaque in the BLAS (dither in reflections) and building windows have no specular response. Give glass a proper reflective treatment (Fresnel-weighted RT reflection sample, deterministic — not stochastic — for smooth surfaces).
+2. **Moon shadows + night polish.** Sun shadows exist; at night the moon casts nothing. Trace moon visibility at night hours, soft penumbra, subtle intensity. Re-judge night emissive balance after.
+3. **Transient combat lights.** Explosions/gunfire already `AddLight` LIGHT_POINT → likely already feed GI. Verify in combat at night (spawn a fight or scripted explosion via debug); if muzzle flashes/explosions don't visibly bounce, wire them into the GI light set with short decay.
+4. **Interior light shafts.** Blocked on cataloguing interior floor coordinates per `area=` (hotel = save start, area 1; the malibu guess 489.6,-84.5 was wrong). Catalogue a few interiors first (debug-teleport + `area=N` sweep), then add volumetric shafts from windows/doors.
+5. **GI probe fallback** for transparents/particles/water spray (they can't sample the screen-space GI buffers in their forward passes) — a small world-space probe grid updated from the RT results.
+6. **Per-hour art-direction pass** (recurring): AO strength/radius vs hour, giblend vs timecycle at all hours, sun shadow softness vs art, water reflection floor (0.07) at dawn/dusk, wall wet sheen 0.25, road cap 0.75, paint base 0.35.
+7. **Perf revisit** (recurring): rain reflection cost crept 0.83→1.23 ms; texture cache hit 975/1024 before the 2048 bump — consider LRU eviction; ped skinning cost; checkerboard quality at `checker=1`.
+8. **Docs/architecture polish** (recurring): RTGI.md accuracy pass, `docs/comparisons` refresh, baseline refresh.
+9. **Port `docs/comparisons/capture.ps1` to the test box.** It still launches the game locally (needs its restored-off-screen window trick for dense GIF capture). Move the run to 192.168.0.209 like `docs/remote_test.ps1` — the off-screen restore + hot-reload arming logic must run remotely (scp a helper ps1, run it via the scheduled task or a second schtasks entry).
 
 Then go deeper — volumetric light shafts through rain, lightning-flash GI, dashboard/interior car lights at night, tunnel/underpass light adaptation, streetlight cone volumetrics in fog — and then start the revisit cycle again with fresh eyes. **Never stop.**
 

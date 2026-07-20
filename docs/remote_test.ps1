@@ -1,7 +1,7 @@
 # Remote RTGI test harness: runs a build on the test box (192.168.0.209)
 # so automated verification never touches the dev PC's desktop.
 #
-#   pwsh -File docs/remote_test.ps1 -Config @"
+#   powershell -File docs/remote_test.ps1 -Config @"
 #   tp=230,-1290,12,180
 #   hour=12
 #   weather=0
@@ -38,7 +38,12 @@ New-Item -ItemType Directory -Force $stage | Out-Null
 Set-Content -Encoding ascii "$stage\rtgi_config.txt" $Config
 Set-Content -Encoding ascii "$stage\rtgi_window.txt" $Window
 
-ssh $RemoteHost "taskkill /IM reVC.exe /F 2>nul & del /q $($gameDir -replace '/','\')\rtgi_shot_*.bmp $($gameDir -replace '/','\')\rtgi.log 2>nul & exit 0" | Out-Null
+# remote default shell is PowerShell 5.1. Inner quotes must survive TWO
+# argv layers (local CreateProcess + remote sshd) — backslash-escape them.
+$gd = $gameDir -replace '/', '\'
+$clean = "Stop-Process -Name reVC -Force -EA SilentlyContinue; " +
+    "Remove-Item $gd\rtgi_shot_*.bmp, $gd\rtgi.log -EA SilentlyContinue; exit 0"
+ssh $RemoteHost "powershell -NoProfile -Command \`"$clean\`"" | Out-Null
 if (-not $SkipExe) {
     Write-Host "pushing exe..."
     scp -q "$repo\bin\win-amd64-librw_gl3_glfw-oal\Release\reVC.exe" "${RemoteHost}:$gameDir/"
@@ -48,16 +53,18 @@ scp -q "$stage\rtgi_config.txt" "$stage\rtgi_window.txt" "${RemoteHost}:$gameDir
 Write-Host "launching (rtgi-run task, $Seconds s)..."
 ssh $RemoteHost "schtasks /Run /TN rtgi-run" | Out-Null
 Start-Sleep -Seconds 15
-$up = ssh $RemoteHost "tasklist /FI `"IMAGENAME eq reVC.exe`" /NH"
-if ($up -notmatch "reVC") { throw "reVC.exe did not start on $RemoteHost" }
+$up = ssh $RemoteHost 'tasklist /FI \"IMAGENAME eq reVC.exe\" /NH'
+if ("$up" -notmatch "reVC") { throw "reVC.exe did not start on $RemoteHost" }
 Start-Sleep -Seconds ([Math]::Max(0, $Seconds - 15))
 ssh $RemoteHost "taskkill /IM reVC.exe /F" | Out-Null
 Start-Sleep -Seconds 3
 
 Write-Host "fetching results..."
 scp -q "${RemoteHost}:$gameDir/rtgi.log" $OutDir
-# shots may not exist (shotframes=0 runs); tolerate
-scp -q "${RemoteHost}:$gameDir/rtgi_shot_*.bmp" $OutDir 2>$null
+# shots may not exist (shotframes=0 runs); tolerate the nonzero exit.
+# no 2>$null here: PS5.1 wraps redirected native stderr in ErrorRecords
+# which $ErrorActionPreference=Stop turns into a script abort
+scp -q "${RemoteHost}:$gameDir/rtgi_shot_*.bmp" $OutDir
 Get-ChildItem "$OutDir\rtgi_shot_*.bmp" -ErrorAction SilentlyContinue | ForEach-Object {
     # killed runs can truncate a rotating slot — skip non-max-size files
     $_

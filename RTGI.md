@@ -132,6 +132,12 @@ tp=230,-1290,12, hotel exterior, vanilla). Refresh when a change
 intentionally improves the look.
 
 Observations to revisit:
+- Photo-mode AO accumulation works (verified 2026-07-20; the old "grain in
+  photo stills" note predated temporal AO). Remaining photo-mode artifact:
+  the player's idle sway stays inside the 5% depth-reprojection tolerance,
+  so the true average smears a speckled fringe along his silhouette.
+  Possible fix: tighten depth tolerance (or add a normal-difference test)
+  when photo mode is active.
 - Rain feels darker than vanilla art direction (GI pulls ambient toward the
   dark storm sky); consider scaling giblend down in rain, or brightening the
   sky term under overcast weathers.
