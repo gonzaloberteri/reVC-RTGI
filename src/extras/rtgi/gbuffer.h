@@ -2,7 +2,7 @@
 
 #ifdef RTGI
 
-namespace rw { struct Atomic; namespace gl3 { struct InstanceDataHeader; } }
+namespace rw { struct Atomic; struct Texture; namespace gl3 { struct InstanceDataHeader; } }
 
 namespace RayTracedGI {
 
@@ -24,6 +24,13 @@ bool WorldRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header);
 // per-frame telemetry counter (plain unsigned: this header is included
 // before common.h's uint32 typedef exists)
 unsigned int EnvGlassMeshCount(void);
+
+// true when the procedural water look owns a surface with this texture —
+// the neo gloss pipe must not add the baked water sparkle over it
+bool SuppressOGWaterGloss(rw::Texture *tex);
+// true while the shader-only water look is active (extends water draw
+// distance so the seabed LOD never peeks past the water at the horizon)
+bool UsingProceduralWater(void);
 
 // same composite for vehicle atomics; RT reflections replace the matFX
 // env-map pass on materials that carried one.

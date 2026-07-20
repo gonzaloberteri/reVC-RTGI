@@ -2,7 +2,9 @@ uniform sampler2D tex0;
 uniform sampler2D u_reflTex;
 
 uniform vec4 u_rtgiParams;	// x = time (s), y = 1/width, z = 1/height, w = caustic strength
-uniform vec4 u_rtgiWaterCam;	// xyz = camera position
+// camera position rides in u_gbParams.xyz here: librw's uniform registry
+// (MAX_UNIFORMS 40) is full, so the water pass reuses a registered slot
+uniform vec4 u_gbParams;
 
 FSIN vec4 v_color;
 FSIN vec2 v_tex0;
@@ -31,25 +33,36 @@ caustic(vec2 wp, float t)
 void
 main(void)
 {
-	// librw's im3d shading (the vanilla water look) ...
-	vec4 color = v_color*texture(tex0, vec2(v_tex0.x, 1.0-v_tex0.y));
+	vec4 tex = texture(tex0, vec2(v_tex0.x, 1.0-v_tex0.y));
 
-	// ... caustic shimmer riding the vanilla color (keeps art direction —
-	// crests brighten, troughs stay) ...
+	vec4 color;
 	if(u_rtgiParams.w > 0.0){
-		// fade with distance: sub-pixel caustics alias, and the far
-		// water sectors keep their vanilla look anyway — a soft ramp
-		// hides the geometry LOD boundary
-		float dist = length(v_worldpos - u_rtgiWaterCam.xyz);
-		float fade = 1.0 - smoothstep(50.0, 130.0, dist);
-		if(fade > 0.0){
-			float ca = caustic(v_worldpos.xy, u_rtgiParams.x*0.5 + 23.0);
-			color.rgb *= 1.0 + u_rtgiParams.w*1.2*ca*fade;
-		}
+		// fully procedural surface: the vanilla water texture, including
+		// its baked reflective sparkle, is dropped entirely. Base tint
+		// is the timecycle water color carried in v_color (day/night art
+		// still tracks); the caustic shimmer rides on top, tinted by the
+		// base so night water stays dark. Texture ALPHA is kept: it is
+		// the shore fade mask.
+		float dist = length(v_worldpos - u_gbParams.xyz);
+		float fade = 1.0 - smoothstep(60.0, 220.0, dist);
+		float ca = 0.0;
+		if(fade > 0.0)
+			ca = caustic(v_worldpos.xy, u_rtgiParams.x*0.5 + 23.0) * fade * u_rtgiParams.w;
+		// 0.62 stands in for the mean of the dropped texture so the
+		// procedural sea keeps the vanilla art tone
+		vec3 base = v_color.rgb*0.62;
+		color.rgb = clamp(base*(1.0 + 1.8*ca) + 0.10*ca, 0.0, 1.0);
+		// near water stays translucent (shore sand shows through, as
+		// vanilla); far water goes opaque so the seabed LOD texture
+		// cannot grid-pattern through the clean procedural surface
+		color.a = mix(v_color.a * tex.a, 1.0, smoothstep(150.0, 400.0, dist));
+	}else{
+		// caustics toggled off: vanilla textured look
+		color = v_color*tex;
 	}
 
-	// ... plus the ray traced sea reflection; a carries the fresnel-shaped
-	// strength the reflection pass computed for the water surface
+	// the ray traced sea reflection; a carries the fresnel-shaped strength
+	// the reflection pass computed for the water surface
 	vec4 refl = texture(u_reflTex, gl_FragCoord.xy * u_rtgiParams.yz);
 	color.rgb = mix(color.rgb, refl.rgb, refl.a);
 

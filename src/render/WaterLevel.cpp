@@ -811,9 +811,16 @@ CWaterLevel::GetWaterNormal(float fX, float fY)
 inline float
 _GetWaterDrawDist()
 {
-	if     ( TheCamera.GetPosition().z < 15.0f  ) return 1200.0f;
-	if     ( TheCamera.GetPosition().z > 60.0f  ) return 2000.0f;
-	return ( TheCamera.GetPosition().z + -15.0f ) * 800.0f / 45.0f + 1200.0f;
+	float dist;
+	if     ( TheCamera.GetPosition().z < 15.0f  ) dist = 1200.0f;
+	else if( TheCamera.GetPosition().z > 60.0f  ) dist = 2000.0f;
+	else dist = ( TheCamera.GetPosition().z + -15.0f ) * 800.0f / 45.0f + 1200.0f;
+#ifdef RTGI
+	// shader-only water: cover the seabed LOD all the way to the horizon
+	if ( RayTracedGI::UsingProceduralWater() )
+		dist *= 3.0f;
+#endif
+	return dist;
 }
 
 inline float

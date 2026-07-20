@@ -343,6 +343,14 @@ glossRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 	while(n--){
 		m = inst->material;
 
+#ifdef RTGI
+		// procedural RTGI water replaces the baked reflective sparkle
+		// this additive pass would paint over far water sectors
+		if(RayTracedGI::SuppressOGWaterGloss(m->texture)){
+			inst++;
+			continue;
+		}
+#endif
 		RGBA color = { 255, 255, 255, m->color.alpha };
 		setMaterial(color, m->surfaceProps);
 

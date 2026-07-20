@@ -105,11 +105,15 @@ void main()
 	vec3 viewDir = normalize(viewRay);
 	vec3 worldPos = pc.camPos.xyz + viewRay*depth;
 
-	// sea: procedural ripple so the mirror wobbles like swell
+	// sea: procedural ripple so the mirror wobbles like swell. The ripple
+	// flattens with distance — at grazing incidence a per-pixel perturbed
+	// mirror ray alternates sun/sky hits and the horizon dissolves into
+	// speckle; coherent far rays reflect the sky smoothly instead
 	if(nr.w > 1.5 && nr.w < 2.5){
 		float t = float(pc.frame & 0x3FFFu) * 0.03;
-		normal.x += 0.055*sin(worldPos.x*0.9 + t*1.7) + 0.04*sin(worldPos.y*1.9 + t*2.3);
-		normal.y += 0.055*sin(worldPos.y*0.8 + t*1.3) + 0.04*sin((worldPos.x + worldPos.y)*1.2 + t*1.9);
+		float rip = 1.0 - smoothstep(80.0, 400.0, length(worldPos - pc.camPos.xyz));
+		normal.x += rip*(0.055*sin(worldPos.x*0.9 + t*1.7) + 0.04*sin(worldPos.y*1.9 + t*2.3));
+		normal.y += rip*(0.055*sin(worldPos.y*0.8 + t*1.3) + 0.04*sin((worldPos.x + worldPos.y)*1.2 + t*1.9));
 		normal = normalize(normal);
 	}
 

@@ -73,13 +73,23 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
   and the reflection pass mirrors the actual scene off it with a
   procedural swell ripple; the forward water pass mixes the result over
   the vanilla look by fresnel strength
-- **Water caustics + near-water fix** — the forward water shader animates
-  the classic iterative-interference caustic shimmer (world-space tiled,
-  ~12.6 m period, distance-faded 50→130 m to hide the far-sector LOD
-  boundary; `watercaustics=` toggle). The near-camera wavy/mask water
-  renders as ATOMICS that bypassed the im3d override and popped to the
-  plain vanilla texture up close — they now draw through the same RTGI
-  water shader (`RenderWaterAtomic`)
+- **Shader-only water** (user direction) — the vanilla water texture,
+  including its baked reflective sparkle, is dropped entirely: base tint
+  comes from the timecycle water color (×0.62 standing in for the removed
+  texture's mean), the caustic shimmer rides on top (world-space tiled
+  ~12.6 m, distance-faded 60→220 m), and the RT sea reflection mixes over
+  it. Texture alpha is kept as the shore mask; far water goes opaque
+  (150→400 m) so the seabed LOD cannot grid through it. The near-camera
+  wavy/mask ATOMICS bypassed the im3d override (vanilla-texture pop up
+  close) and now draw through the same shader (`RenderWaterAtomic`).
+  OG-water textures (waterclear/lodwaterclear/seabed) are stripped from
+  the world pipe + stock matFX pipe (hooked; LOD sea atomics live there)
+  and the neo gloss sparkle pass skips them; water draw distance ×3 while
+  the procedural look is active. The sea-reflection swell ripple flattens
+  with distance (80→400 m) so grazing mirror rays stay coherent instead
+  of dissolving the horizon into speckle. `watercaustics=0` restores the
+  textured look; camera pos rides in `u_gbParams` (librw uniform registry
+  is at its 40-slot cap — a NEW registerUniform silently returns -1!)
 
 ## Architecture
 

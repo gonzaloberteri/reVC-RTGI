@@ -45,8 +45,13 @@ $clean = "Stop-Process -Name reVC -Force -EA SilentlyContinue; " +
     "Remove-Item $gd\rtgi_shot_*.bmp, $gd\rtgi.log -EA SilentlyContinue; exit 0"
 ssh $RemoteHost "powershell -NoProfile -Command \`"$clean\`"" | Out-Null
 if (-not $SkipExe) {
+    # a failed build followed by ';'-chained scripts silently pushes a stale
+    # exe and invalidates the whole verification - refuse old binaries
+    $exeItem = Get-Item "$repo\bin\win-amd64-librw_gl3_glfw-oal\Release\reVC.exe"
+    $ageMin = ((Get-Date) - $exeItem.LastWriteTime).TotalMinutes
+    if ($ageMin -gt 20) { throw "reVC.exe is $([int]$ageMin) min old - did the build fail? (-SkipExe to override)" }
     Write-Host "pushing exe..."
-    scp -q "$repo\bin\win-amd64-librw_gl3_glfw-oal\Release\reVC.exe" "${RemoteHost}:$gameDir/"
+    scp -q $exeItem.FullName "${RemoteHost}:$gameDir/"
 }
 scp -q "$stage\rtgi_config.txt" "$stage\rtgi_window.txt" "${RemoteHost}:$gameDir/"
 

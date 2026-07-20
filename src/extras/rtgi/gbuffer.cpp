@@ -54,6 +54,10 @@ static int32 u_rtgiWaterCam;
 
 #define U(i) (rw::gl3::currentShader->uniformLocations[i])
 
+// stock-matFX pipeline interception (defined below)
+static void matfxRenderCBHook(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header);
+static void (*gOrigMatfxCB)(rw::Atomic*, rw::gl3::InstanceDataHeader*);
+
 // dev aid (dumptex=1): log each distinct world-mesh texture name once, to
 // mine the vocabulary for name-based material heuristics (VC world models
 // carry no matFX env maps — texture names are the only glass signal)
@@ -170,12 +174,26 @@ GbufferInit(int width, int height)
 		return false;
 	}
 
+	// intercept the stock matFX pipeline (LOD sea atomics — see hook)
+	{
+		rw::gl3::ObjPipeline *mp = (rw::gl3::ObjPipeline*)rw::matFXGlobals.pipelines[rw::platform];
+		if(mp && mp->renderCB != matfxRenderCBHook){
+			gOrigMatfxCB = mp->renderCB;
+			mp->renderCB = matfxRenderCBHook;
+		}
+	}
 	return true;
 }
 
 void
 GbufferShutdown(void)
 {
+	{
+		rw::gl3::ObjPipeline *mp = (rw::gl3::ObjPipeline*)rw::matFXGlobals.pipelines[rw::platform];
+		if(mp && mp->renderCB == matfxRenderCBHook)
+			mp->renderCB = gOrigMatfxCB;
+		gOrigMatfxCB = nil;
+	}
 	if(gGbufShader){ gGbufShader->destroy(); gGbufShader = nil; }
 	if(gGbufSkinShader){ gGbufSkinShader->destroy(); gGbufSkinShader = nil; }
 	if(gWorldShader){ gWorldShader->destroy(); gWorldShader = nil; }
@@ -392,6 +410,73 @@ uploadCompositeUniforms(void)
 	glUniform4fv(U(u_rtgiGIParams), 1, giParams);
 }
 
+// the far LOD sea around the islands is WORLD geometry carrying the vanilla
+// water texture (baked reflective sparkle) — with the procedural water look
+// that texture must go everywhere, or a speckled band rings the horizon
+static bool
+texIsOGWater(rw::Texture *tex)
+{
+	if(tex == nil)
+		return false;
+	char low[33];
+	int i;
+	for(i = 0; i < 32 && tex->name[i]; i++)
+		low[i] = (char)tolower(tex->name[i]);
+	low[i] = '\0';
+	// seabed LOD grids through/past the water at the horizon; treat it as
+	// part of the OG water look
+	return strstr(low, "waterclear") != nil || strstr(low, "seabed") != nil;
+}
+
+// LOD sea atomics carry matFX and render through librw's STOCK matFX
+// pipeline (attachPipe in RwHelper overrides the world-pipe attachment),
+// so they dodge WorldRenderCB and keep painting the OG water texture at
+// the horizon. Hook the pipeline: atomics carrying the OG water texture
+// composite through WorldRenderCB (which strips that texture); everything
+// else falls through to the stock callback.
+static void
+matfxRenderCBHook(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
+{
+	using namespace rw::gl3;
+
+	if(gbRayTracedGI && gbAOEnable && gbWaterCaustics){
+		bool hasOGWater = false;
+		InstanceData *inst = header->inst;
+		for(rw::int32 i = 0; i < header->numMeshes; i++)
+			if(texIsOGWater(inst[i].material->texture)){
+				hasOGWater = true;
+				break;
+			}
+		if(hasOGWater){
+			static bool logged;
+			if(!logged){
+				RtgiLog("RTGI: matFX OG-water atomic intercepted\n");
+				logged = true;
+			}
+			if(WorldRenderCB(atomic, header))
+				return;
+		}
+	}
+	if(gOrigMatfxCB)
+		gOrigMatfxCB(atomic, header);
+}
+
+// true while the procedural (shader-only) water look is active
+bool
+UsingProceduralWater(void)
+{
+	return gbRayTracedGI && gbAOEnable && gbReflections && gbWaterCaustics;
+}
+
+// the neo gloss pipe adds the baked water sparkle additively on top of
+// whatever the base pass drew — suppress it wherever the procedural
+// water look owns the surface
+bool
+SuppressOGWaterGloss(rw::Texture *tex)
+{
+	return UsingProceduralWater() && texIsOGWater(tex);
+}
+
 bool
 WorldRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 {
@@ -415,7 +500,15 @@ WorldRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header)
 
 		RGBA color = { 255, 255, 255, m->color.alpha };
 		setMaterial(color, m->surfaceProps);
-		setTexture(0, m->texture);
+		if(gbWaterCaustics && texIsOGWater(m->texture)){
+			static int logged;
+			if(logged < 6){
+				RtgiLog("RTGI: world pipe stripped OG water tex %s\n", m->texture->name);
+				logged++;
+			}
+			setTexture(0, nil);	// prelight-only flat sea
+		}else
+			setTexture(0, m->texture);
 
 		rw::SetRenderState(VERTEXALPHA, inst->vertexAlpha || m->color.alpha != 0xFF);
 
@@ -535,9 +628,11 @@ waterUploadUniforms(void)
 	float t = (float)(CTimer::GetTimeInMilliseconds() % 3600000u) * 0.001f;
 	float params[4] = { t, 1.0f/gWidth, 1.0f/gHeight, gbWaterCaustics ? 1.0f : 0.0f };
 	glUniform4fv(U(u_rtgiParams), 1, params);
+	// camera rides in u_gbParams: the librw uniform registry (40 slots) is
+	// full, so the water pass reuses a slot the G-buffer pass owns
 	CVector camPos = TheCamera.GetPosition();
 	float cam[4] = { camPos.x, camPos.y, camPos.z, 0.0f };
-	glUniform4fv(U(u_rtgiWaterCam), 1, cam);
+	glUniform4fv(U(u_gbParams), 1, cam);
 }
 
 void
