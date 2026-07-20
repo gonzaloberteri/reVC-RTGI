@@ -7,6 +7,7 @@
 
 #include "tlas.h"
 #include "blas.h"
+#include "gbuffer.h"
 
 #include "common.h"
 #include <rwcore.h>
@@ -256,6 +257,10 @@ emitAtomic(rw::Atomic *atomic, VkCommandBuffer cmd, uint8_t mask, float emissive
 	if(gNumInstances >= MAX_INSTANCES)
 		return;
 	if((atomic->object.object.flags & rw::Atomic::RENDER) == 0)
+		return;
+	// LOD shells would put a phantom low-poly box around every vehicle
+	// (their distance gate lives in the render callback, not the flag)
+	if(AtomicIsVehicleLod(atomic))
 		return;
 	rw::Geometry *geo = atomic->geometry;
 	if(geo == nil)

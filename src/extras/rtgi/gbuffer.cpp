@@ -25,6 +25,7 @@
 #include "Weather.h"
 #include "Timer.h"
 #include "Camera.h"
+#include "VisibilityPlugins.h"
 
 namespace RayTracedGI {
 
@@ -225,12 +226,30 @@ meshIsGlass(rw::gl3::InstanceData *inst)
 }
 
 
+// vehicle LOD shells (_vlo/_lo atomics) keep their RENDER flag forever; the
+// forward pass distance-gates them inside their render callbacks, which the
+// G-buffer/BLAS clump walks bypass. Drawing them regardless wraps every car
+// in a low-poly reflective box, so skip them — the hi-detail atomics are
+// always present here and are the better RT proxy at any distance.
+bool
+AtomicIsVehicleLod(rw::Atomic *atomic)
+{
+	void *cb = (void*)atomic->renderCB;
+	return cb == (void*)CVisibilityPlugins::RenderVehicleReallyLowDetailCB ||
+		cb == (void*)CVisibilityPlugins::RenderVehicleReallyLowDetailCB_BigVehicle ||
+		cb == (void*)CVisibilityPlugins::RenderVehicleLowDetailCB_BigVehicle ||
+		cb == (void*)CVisibilityPlugins::RenderVehicleLowDetailAlphaCB_BigVehicle ||
+		cb == (void*)CVisibilityPlugins::RenderVehicleLoDetailCB_Boat;
+}
+
 static void
 gbufDrawAtomic(rw::Atomic *atomic, float reflW, float glassReflW, bool envAsGlass)
 {
 	using namespace rw::gl3;
 
 	if((atomic->object.object.flags & rw::Atomic::RENDER) == 0)
+		return;
+	if(AtomicIsVehicleLod(atomic))
 		return;
 	rw::Geometry *geo = atomic->geometry;
 	if(geo == nil || geo->flags & rw::Geometry::NATIVE)

@@ -25,6 +25,10 @@ bool WorldRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header);
 // before common.h's uint32 typedef exists)
 unsigned int EnvGlassMeshCount(void);
 
+// vehicle LOD shell atomics (_vlo/_lo) — distance-gated by their render
+// callback, so the RTGI clump walks must skip them explicitly
+bool AtomicIsVehicleLod(rw::Atomic *atomic);
+
 // true when the procedural water look owns a surface with this texture —
 // the neo gloss pipe must not add the baked water sparkle over it
 bool SuppressOGWaterGloss(rw::Texture *tex);
