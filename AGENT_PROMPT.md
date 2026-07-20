@@ -17,12 +17,12 @@ Fork of re3 (`miami` = GTA Vice City decompile). The librw OpenGL 3.3 raster pip
 ## Build & deploy
 
 ```
-cd C:\Users\PC\Downloads\re3          # MSBuild MUST run from repo root; a persisted cd breaks build\reVC.sln relative paths
-./premake5.exe vs2019 --with-librw --with-rtgi     # only when premake5.lua or file lists change
-"C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" build/reVC.sln -p:Configuration=Release "-p:Platform=win-amd64-librw_gl3_glfw-oal" -p:PlatformToolset=v143 -m -v:m -nologo
+cd C:\Users\PC\Downloads\re3          # only when premake5.lua or file lists change:
+./premake5.exe vs2019 --with-librw --with-rtgi
+powershell -File docs/build_deploy.ps1        # THE build command: MSBuild + scp exe to the box + remote hash verify
 ```
 
-Deployment is part of the remote test run (`docs/remote_test.ps1` pushes the fresh exe); don't copy the exe into the local game dir.
+`docs/build_deploy.ps1` is the canonical build step (USER DIRECTIVE 2026-07-20): it builds AND deploys to the test box in one deterministic step, failing loudly on build errors, stale exe, or a remote hash mismatch — never invoke MSBuild alone for a build you intend to test (`-NoDeploy` exists for offline iteration, `-SyncAssets` pushes changed game-dir assets by name+size diff). `docs/remote_test.ps1` still re-pushes the exe defensively; don't copy the exe into the local game dir.
 
 GL shaders: `cd src/extras/shaders && sh makeinc_glsl.sh <file>`. RT shaders: `cd src/extras/rtgi/shaders && GLSLANG="C:/VulkanSDK/1.4.350.0/Bin/glslangValidator.exe" sh make_spirv.sh`. Generated `.inc` are gitignored by pattern — `git add -f` them. Occasionally verify a vanilla premake (no `--with-rtgi`) still compiles.
 

@@ -127,8 +127,15 @@ reflections → semaphore → forward pass samples the results in the world shad
 
 ```
 premake5 vs2019 --with-librw --with-rtgi
-msbuild build/reVC.sln -p:Configuration=Release -p:Platform=win-amd64-librw_gl3_glfw-oal -p:PlatformToolset=v143
+powershell -File docs/build_deploy.ps1
 ```
+
+`build_deploy.ps1` wraps MSBuild and then deterministically deploys: it
+pushes the fresh exe to the test box (192.168.0.209) and verifies the
+remote MD5 matches the local build, so the box can never silently run a
+stale binary. `-NoDeploy` builds only; `-SyncAssets` also pushes changed
+game-dir assets (name+size diff, runtime artifacts excluded);
+`-SkipBuild` deploys an existing <20-min-old exe.
 
 librw must be present at `vendor/librw` (current aap/librw master; the fork
 carries compatibility fixes for it).
