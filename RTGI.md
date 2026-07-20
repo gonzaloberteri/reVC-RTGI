@@ -136,7 +136,9 @@ instances, AO, G-buffer, sun visibility, GI, reflections).
 texture names once each), `tp=x,y,z[,heading]` (teleport
 after load; heading in degrees, 0 = north, CCW, snaps the camera
 behind), `area=N` (interior for the teleport, eAreaName in Game.h),
-`hour=N`, `weather=N`, `cutscene=NAME,x,y,z` (play mission cutscene NAME's
+`hour=N`, `weather=N`, `explode=x,y,z` (detonate a grenade-type explosion
+there every ~2.5 s after settle — combat-light verification),
+`cutscene=NAME,x,y,z` (play mission cutscene NAME's
 camera spline at that offset — deterministic sweeps for A/B captures;
 `cutloop=1` restarts it forever; names e.g. INT_A, LAW_1A, CUB_1 from
 ANIM\CUTS.IMG), plus `rtgi_autoload.txt` containing a save slot
