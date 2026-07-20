@@ -56,6 +56,12 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
   Fresnel mirror from the reflection pass (F0 0.04 → 0.95 at grazing);
   the composite tints the pane by the Fresnel weight while keeping the
   vanilla translucency (`glassrefl=` toggle)
+- **Building windows** — facade window tiles get the same Fresnel glass
+  marker, detected by texture name (contains "win", minus "wine"/"winch"
+  false positives — VC world models carry no matFX env maps, so the name
+  is the only signal; vocabulary mined via the `dumptex=1` dev key).
+  Streets of windows mirror palms/sky/neon at grazing angles while stucco
+  stays matte; glass-marked mesh count rides the telemetry line
 - **Sea reflections** — the water surface is re-rendered into the G-buffer
   (via a librw im3d shader-override hook, patch in docs/librw-rtgi.patch)
   and the reflection pass mirrors the actual scene off it with a
@@ -103,7 +109,8 @@ instances, AO, G-buffer, sun visibility, GI, reflections).
 `rtgi_config.txt` next to the exe (for automated testing): `view=N`,
 `enabled/ao/gi/gi2/photo/denoise/reflections/reflfilter/glassrefl/sunshadows=0|1`,
 `aostrength/aoradius/giblend/giexposure/emissive=F`, `aorays=N`,
-`shotframes=N` (periodic BMP dumps), `tp=x,y,z[,heading]` (teleport
+`shotframes=N` (periodic BMP dumps), `dumptex=1` (log distinct world
+texture names once each), `tp=x,y,z[,heading]` (teleport
 after load; heading in degrees, 0 = north, CCW, snaps the camera
 behind), `area=N` (interior for the teleport, eAreaName in Game.h),
 `hour=N`, `weather=N`, plus `rtgi_autoload.txt` containing a save slot

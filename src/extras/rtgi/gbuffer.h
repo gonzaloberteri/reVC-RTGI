@@ -21,6 +21,10 @@ void GbufferRender(void);
 // ambient term. Returns false when RTGI is off (caller runs its normal path).
 bool WorldRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header);
 
+// per-frame telemetry counter (plain unsigned: this header is included
+// before common.h's uint32 typedef exists)
+unsigned int EnvGlassMeshCount(void);
+
 // same composite for vehicle atomics; RT reflections replace the matFX
 // env-map pass on materials that carried one.
 bool VehicleRenderCB(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header);

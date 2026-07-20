@@ -2,6 +2,8 @@
 
 #include <windows.h>
 #include <stdio.h>
+#include <string.h>
+#include <ctype.h>
 
 #include "interop.h"
 #include "gbuffer.h"
@@ -48,6 +50,48 @@ static int32 u_rtgiReflParams;
 static int32 u_rtgiVehParams;
 
 #define U(i) (rw::gl3::currentShader->uniformLocations[i])
+
+// dev aid (dumptex=1): log each distinct world-mesh texture name once, to
+// mine the vocabulary for name-based material heuristics (VC world models
+// carry no matFX env maps — texture names are the only glass signal)
+static unsigned int gEnvGlassMeshes;
+
+unsigned int EnvGlassMeshCount(void) { return gEnvGlassMeshes; }
+
+// building windows are baked facade textures — the texture NAME is the only
+// glass signal VC has (no matFX env maps on world models). The dumped
+// vocabulary ("apartmentwin", "hotelwindow", "tidewin", "acwindow",
+// "dt_blueywin", "big_win_LOD"...) reduces to: contains "win", minus the
+// false positives ("wine", "winch").
+static bool
+texNameIsWindow(const char *name)
+{
+	char low[33];
+	int i;
+	for(i = 0; i < 32 && name[i]; i++)
+		low[i] = (char)tolower(name[i]);
+	low[i] = '\0';
+	if(strstr(low, "wine") || strstr(low, "winch"))
+		return false;
+	return strstr(low, "win") != nil;
+}
+
+static void
+dumpTexName(rw::gl3::InstanceData *inst)
+{
+	enum { MAX_NAMES = 512 };
+	static char seen[MAX_NAMES][32];
+	static int numSeen;
+	rw::Material *m = inst->material;
+	if(m->texture == nil || numSeen >= MAX_NAMES)
+		return;
+	const char *name = m->texture->name;
+	for(int i = 0; i < numSeen; i++)
+		if(strncmp(seen[i], name, 32) == 0)
+			return;
+	strncpy(seen[numSeen++], name, 32);
+	RtgiLog("RTGI: tex %s\n", name);
+}
 
 bool
 GbufferInit(int width, int height)
@@ -139,6 +183,7 @@ GbufferInit(int width, int height)
 		RtgiLog("RTGI: G-buffer FBO incomplete (0x%x)\n", status);
 		return false;
 	}
+
 	return true;
 }
 
@@ -175,8 +220,9 @@ meshIsGlass(rw::gl3::InstanceData *inst)
 	return a != 255 && a != 0;
 }
 
+
 static void
-gbufDrawAtomic(rw::Atomic *atomic, float reflW, float glassReflW)
+gbufDrawAtomic(rw::Atomic *atomic, float reflW, float glassReflW, bool envAsGlass)
 {
 	using namespace rw::gl3;
 
@@ -217,6 +263,15 @@ gbufDrawAtomic(rw::Atomic *atomic, float reflW, float glassReflW)
 			if(glassReflW <= 0.0f || !meshIsGlass(inst))
 				continue;
 			want = glassReflW;
+		}else if(envAsGlass){
+			if(gbDumpTex)
+				dumpTexName(inst);
+			rw::Material *m = inst->material;
+			if(m->texture && texNameIsWindow(m->texture->name)){
+				// facade window tiles get the Fresnel glass sheen
+				want = 3.0f;
+				gEnvGlassMeshes++;
+			}
 		}
 		if(want != boundReflW){
 			float p[4] = { want, 0.0f, 0.0f, 0.0f };
@@ -232,6 +287,8 @@ void
 GbufferRender(void)
 {
 	using namespace rw::gl3;
+
+	gEnvGlassMeshes = 0;
 
 	GLint prevFbo, prevViewport[4];
 	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevFbo);
@@ -260,24 +317,28 @@ GbufferRender(void)
 		// 3 = glass. Roads use the game's own per-model wet-reflection
 		// flag; other surfaces get a light sheen; peds never reflect.
 		float reflW, glassReflW = 0.0f;
+		bool envAsGlass = false;
 		if(e->IsVehicle()){
 			reflW = -0.35f;
 			if(gbGlassRefl && gbReflections)
 				glassReflW = 3.0f;
 		}else if(e->IsPed())
 			reflW = 0.0f;
-		else if(e->IsBuilding() &&
-		   ((CSimpleModelInfo*)CModelInfo::GetModelInfo(e->GetModelIndex()))->m_wetRoadReflection)
-			reflW = 1.0f;
-		else
-			reflW = 0.25f;
+		else{
+			if(e->IsBuilding() &&
+			   ((CSimpleModelInfo*)CModelInfo::GetModelInfo(e->GetModelIndex()))->m_wetRoadReflection)
+				reflW = 1.0f;
+			else
+				reflW = 0.25f;
+			envAsGlass = gbGlassRefl && gbReflections;
+		}
 
 		if(RwObjectGetType(e->m_rwObject) == rpATOMIC)
-			gbufDrawAtomic((rw::Atomic*)e->m_rwObject, reflW, glassReflW);
+			gbufDrawAtomic((rw::Atomic*)e->m_rwObject, reflW, glassReflW, envAsGlass);
 		else{
 			rw::Clump *clump = (rw::Clump*)e->m_rwObject;
 			FORLIST(lnk, clump->atomics)
-				gbufDrawAtomic(rw::Atomic::fromClump(lnk), reflW, glassReflW);
+				gbufDrawAtomic(rw::Atomic::fromClump(lnk), reflW, glassReflW, envAsGlass);
 		}
 	}
 
