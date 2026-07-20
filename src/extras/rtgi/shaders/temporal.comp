@@ -73,6 +73,29 @@ void main()
 				if(pd > 0.0 && abs(pd - pz) / pz < 0.05){
 					vec3 hist = texture(prevAccum, prevUv).rgb;
 					vec3 prevM = texture(prevMoments, prevUv).rgb;
+
+					// camera-only reprojection cannot reject history
+					// under a MOVING occluder (the ground pixel passes
+					// the depth test, but last frame's shading still
+					// holds the car's shadow/occlusion) — fast cars
+					// smear their shadow backward. Clamp history into
+					// the current 3x3 raw neighborhood (mean +/- k*sigma,
+					// as the reflection temporal already does); photo
+					// mode must keep the unclamped true average
+					vec3 nbMean = vec3(0.0), nbM2 = vec3(0.0);
+					float aoMean = 0.0, aoM2 = 0.0;
+					for(int oy = -1; oy <= 1; oy++)
+					for(int ox = -1; ox <= 1; ox++){
+						ivec2 q = clamp(ivec2(px) + ivec2(ox, oy),
+							ivec2(0), ivec2(pc.size) - 1);
+						vec3 s = imageLoad(giRaw, q).rgb;
+						nbMean += s; nbM2 += s*s;
+						float a = texelFetch(aoRaw, q, 0).r;
+						aoMean += a; aoM2 += a*a;
+					}
+					nbMean /= 9.0; aoMean /= 9.0;
+					vec3 nbSig = sqrt(max(nbM2/9.0 - nbMean*nbMean, 0.0));
+					float aoSig = sqrt(max(aoM2/9.0 - aoMean*aoMean, 0.0));
 					// checkerboard: pixels in untraced 8x8 tiles carry
 					// their history forward unchanged (must mirror the
 					// workgroup predicate in gi.comp)
@@ -88,6 +111,11 @@ void main()
 						alphaC = 0.0;
 						alphaM = 0.0;
 					}
+					// 1spp raw stats are noisy, so clamp loosely (2 sigma):
+					// tight enough to cut multi-frame trails, loose enough
+					// that stable regions keep their converged history
+					if(pc.photo == 0u && traced)
+						hist = clamp(hist, nbMean - 2.0*nbSig, nbMean + 2.0*nbSig);
 					result = mix(hist, cur, alphaC);
 					moments.r = mix(prevM.r, lum, alphaM);
 					moments.g = mix(prevM.g, lum*lum, alphaM);
@@ -97,6 +125,10 @@ void main()
 					// noisy cosine-hemisphere term smooths out here
 					float aoHist = texture(prevAoAccum, prevUv).r;
 					float alphaAo = pc.photo != 0u ? 1.0/n : max(1.0/n, 0.12);
+					// AO is a single clean cosine ray - clamp tighter
+					// than GI so the under-car darkening can't trail
+					if(pc.photo == 0u)
+						aoHist = clamp(aoHist, aoMean - 1.5*aoSig, aoMean + 1.5*aoSig);
 					aoResult = mix(aoHist, aoCur.r, alphaAo);
 				}
 			}
