@@ -32,6 +32,11 @@
 #include "CutsceneMgr.h"
 #include "Explosion.h"
 
+// weapon cheat sets (Pad.cpp, global scope) — "guns=N" harness key
+void WeaponCheat1();
+void WeaponCheat2();
+void WeaponCheat3();
+
 namespace RayTracedGI {
 
 void
@@ -90,6 +95,7 @@ static bool gTeleportHasHeading;
 static bool gWantTeleport;
 static int32 gnForceArea = 0;	// config "area=N": interior for the teleport (eAreaName)
 static int32 gnForceHour = -1;	// config "hour=N": pin the game clock
+static int32 gnGiveGuns = -1;	// config "guns=N": give weapon cheat set 1-3
 static int32 gnForceWeather = -1;	// config "weather=N"
 // config "cutscene=NAME,x,y,z": play a mission cutscene's camera spline at
 // the given offset — deterministic camera paths for A/B captures (the
@@ -233,6 +239,15 @@ devHarnessTick(void)
 		CWeather::ForceWeatherNow((int16)gnForceWeather);
 		RtgiLog("RTGI: forced weather %d\n", gnForceWeather);
 		appliedWeather = gnForceWeather;
+	}
+	// "guns=N": hand over the game's own weapon cheat set (1-3)
+	static int32 appliedGuns = -1;
+	if(gnGiveGuns >= 1 && gnGiveGuns <= 3 && tick >= 160 && gnGiveGuns != appliedGuns){
+		if(gnGiveGuns == 1) ::WeaponCheat1();
+		else if(gnGiveGuns == 2) ::WeaponCheat2();
+		else ::WeaponCheat3();
+		RtgiLog("RTGI: gave weapon set %d\n", gnGiveGuns);
+		appliedGuns = gnGiveGuns;
 	}
 
 	// deterministic capture cameras: play a cutscene spline at the
@@ -434,6 +449,7 @@ readConfigFile(void)
 			gWantExplosions = true;
 		else if(sscanf(line, "area=%d", &ival) == 1) gnForceArea = ival;
 		else if(sscanf(line, "hour=%d", &ival) == 1) gnForceHour = ival;
+		else if(sscanf(line, "guns=%d", &ival) == 1) gnGiveGuns = ival;
 		else if(sscanf(line, "weather=%d", &ival) == 1) gnForceWeather = ival;
 	}
 	fclose(f);
