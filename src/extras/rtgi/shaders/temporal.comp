@@ -124,11 +124,13 @@ void main()
 					// AO is traced every frame (no checkerboard); the
 					// noisy cosine-hemisphere term smooths out here
 					float aoHist = texture(prevAoAccum, prevUv).r;
-					float alphaAo = pc.photo != 0u ? 1.0/n : max(1.0/n, 0.12);
-					// AO is a single clean cosine ray - clamp tighter
-					// than GI so the under-car darkening can't trail
+					float alphaAo = pc.photo != 0u ? 1.0/n : max(1.0/n, 0.2);
+					// AO is a single clean cosine ray - clamp much
+					// tighter than GI (1 sigma) and blend faster
+					// (floor 0.2): the user still saw the under-car
+					// darkening trail behind fast traffic at 1.5 sigma
 					if(pc.photo == 0u)
-						aoHist = clamp(aoHist, aoMean - 1.5*aoSig, aoMean + 1.5*aoSig);
+						aoHist = clamp(aoHist, aoMean - aoSig, aoMean + aoSig);
 					aoResult = mix(aoHist, aoCur.r, alphaAo);
 				}
 			}
