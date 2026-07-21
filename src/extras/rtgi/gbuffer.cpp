@@ -768,6 +768,12 @@ GlassMirrorEnd(void)
 	rw::gl3::im3dOverrideShader = nil;
 }
 
+bool
+GlassFxActive(void)
+{
+	return gbRayTracedGI && gbGlassFx;
+}
+
 // the near-camera wavy/mask water renders as ATOMICS, which bypass the
 // im3d override — vanilla they pop to the plain texture look right where
 // the player can see the water best. Draw them with the same water shader

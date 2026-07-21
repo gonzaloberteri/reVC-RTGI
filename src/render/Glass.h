@@ -16,6 +16,13 @@ public:
 	bool m_bActive;
 	bool m_bShattered;
 	bool m_bCarGlass;
+#ifdef RTGI
+	// CS:S-style shatter: shards bounce once and then rest on the ground
+	// for a while before expiring (m_nTimer keeps its vanilla meaning as
+	// the movement-start/fade-in base, so the rest deadline is separate)
+	bool m_bSettled;
+	uint32 m_nExpireMs;
+#endif
 
 	CFallingGlassPane()  { }
 	~CFallingGlassPane() { }
@@ -24,7 +31,9 @@ public:
 	void Render(void);
 };
 
+#ifndef RTGI
 VALIDATE_SIZE(CFallingGlassPane, 0x70);
+#endif
 
 enum
 {

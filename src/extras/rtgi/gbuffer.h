@@ -61,6 +61,10 @@ extern bool gbWaterGbufPass;
 bool GlassMirrorBegin(void);
 void GlassMirrorEnd(void);
 
+// CS:S-style shatter (dense bouncing shards, crack web on cracked panes).
+// CGlass consults this so the vanilla behavior survives untouched when off.
+bool GlassFxActive(void);
+
 }
 
 #endif

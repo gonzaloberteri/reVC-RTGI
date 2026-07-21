@@ -68,6 +68,7 @@ bool gbDenoise = true;
 bool gbReflections = true;
 bool gbReflFilter = true;
 bool gbGlassRefl = true;
+bool gbGlassFx = true;	// CS:S-style shatter: dense shards, bounce, crack web
 bool gbDumpTex;		// dev: log distinct world texture names (dumptex=1)
 bool gbWaterCaustics = true;
 bool gbVolumetrics = true;
@@ -410,6 +411,7 @@ readConfigFile(void)
 		else if(sscanf(line, "reflections=%d", &ival) == 1) gbReflections = ival != 0;
 		else if(sscanf(line, "reflfilter=%d", &ival) == 1) gbReflFilter = ival != 0;
 		else if(sscanf(line, "glassrefl=%d", &ival) == 1) gbGlassRefl = ival != 0;
+		else if(sscanf(line, "glassfx=%d", &ival) == 1) gbGlassFx = ival != 0;
 		else if(sscanf(line, "dumptex=%d", &ival) == 1) gbDumpTex = ival != 0;
 		else if(sscanf(line, "watercaustics=%d", &ival) == 1) gbWaterCaustics = ival != 0;
 		else if(sscanf(line, "volumetrics=%d", &ival) == 1) gbVolumetrics = ival != 0;
@@ -913,6 +915,7 @@ AddDebugMenuEntries(void)
 	DebugMenuAddVarBool8("RTGI", "RT reflections", (int8_t*)&gbReflections, nil);
 	DebugMenuAddVarBool8("RTGI", "Reflection filter", (int8_t*)&gbReflFilter, nil);
 	DebugMenuAddVarBool8("RTGI", "Glass reflections", (int8_t*)&gbGlassRefl, nil);
+	DebugMenuAddVarBool8("RTGI", "Glass shatter FX", (int8_t*)&gbGlassFx, nil);
 	DebugMenuAddVarBool8("RTGI", "Water caustics", (int8_t*)&gbWaterCaustics, nil);
 	DebugMenuAddVarBool8("RTGI", "Volumetric shafts", (int8_t*)&gbVolumetrics, nil);
 	DebugMenuAddVar("RTGI", "Volumetric strength", &gfVolStrength, nil, 0.05f, 0.0f, 2.0f);

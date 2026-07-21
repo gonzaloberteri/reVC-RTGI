@@ -105,6 +105,43 @@ CFallingGlassPane::Update(void)
 		GetForward() += CrossProduct(m_vecTurn, GetForward());
 		GetUp()      += CrossProduct(m_vecTurn, GetUp());
 
+#ifdef RTGI
+		// CS:S-style shatter: shards bounce off the ground with damping,
+		// then rest for a few seconds before expiring into dust
+		if ( RayTracedGI::GlassFxActive() && !m_bCarGlass )
+		{
+			if ( m_bSettled )
+			{
+				GetPosition().z = m_fGroundZ + 0.02f;
+				m_vecMoveSpeed = CVector(0.0f, 0.0f, 0.0f);
+				if ( CTimer::GetTimeInMilliseconds() >= m_nExpireMs )
+					m_bActive = false;
+				return;
+			}
+			if ( GetPosition().z < m_fGroundZ )
+			{
+				if ( m_vecMoveSpeed.z < -0.08f )
+				{
+					// bounce: damped reflection + a click of sound
+					GetPosition().z = m_fGroundZ + 0.01f;
+					m_vecMoveSpeed.z = -m_vecMoveSpeed.z * 0.4f;
+					m_vecMoveSpeed.x *= 0.65f;
+					m_vecMoveSpeed.y *= 0.65f;
+					m_vecTurn *= 0.5f;
+					PlayOneShotScriptObject(SCRIPT_SOUND_GLASS_LIGHT_BREAK,
+						CVector(GetPosition().x, GetPosition().y, m_fGroundZ));
+				}
+				else
+				{
+					m_bSettled = true;
+					m_vecTurn = CVector(0.0f, 0.0f, 0.0f);
+					m_nExpireMs = CTimer::GetTimeInMilliseconds()
+						+ 4000 + (CGeneral::GetRandomNumber() & 2047);
+				}
+				return;
+			}
+		}
+#endif
 		if ( GetPosition().z < m_fGroundZ )
 		{
 			CVector pos;
@@ -308,7 +345,14 @@ CGlass::Render(void)
 CFallingGlassPane *
 CGlass::FindFreePane(void)
 {
-	for ( int32 i = 0; i < NUM_GLASSPANES; i++ )
+#ifdef RTGI
+	// the pool is compiled large for the shatter FX; without the toggle the
+	// runtime piece count stays exactly vanilla
+	int32 limit = RayTracedGI::GlassFxActive() ? NUM_GLASSPANES : 45;
+#else
+	int32 limit = NUM_GLASSPANES;
+#endif
+	for ( int32 i = 0; i < limit; i++ )
 	{
 		if ( !aGlassPanes[i].m_bActive )
 			return &aGlassPanes[i];
@@ -331,15 +375,31 @@ CGlass::GeneratePanesForWindow(uint32 type, CVector pos, CVector up, CVector rig
 	if ( rightSteps < 1.0f ) rightSteps = 1.0f;
 
 	uint32 ysteps = stepmul * (uint32)upSteps;
-	if ( ysteps > 3 ) ysteps = 3;
-
 	uint32 xsteps = stepmul * (uint32)rightSteps;
+#ifdef RTGI
+	// CS:S-style shatter: twice the grid density (smaller shards), and
+	// explosions still burst into real pieces instead of a single cell
+	if ( RayTracedGI::GlassFxActive() && !carGlass )
+	{
+		ysteps = Min(ysteps * 2, 4u);
+		xsteps = Min(xsteps * 2, 4u);
+		if ( explosion )
+		{
+			ysteps = Min(ysteps, 2u);
+			xsteps = Min(xsteps, 2u);
+		}
+	}
+	else
+#endif
+	{
+	if ( ysteps > 3 ) ysteps = 3;
 	if ( xsteps > 3 ) xsteps = 3;
 
 	if ( explosion )
 	{
 		if ( ysteps > 1 ) ysteps = 1;
 		if ( xsteps > 1 ) xsteps = 1;
+	}
 	}
 
 	float upScl    = upLen    / float(ysteps);
@@ -407,6 +467,10 @@ CGlass::GeneratePanesForWindow(uint32 type, CVector pos, CVector up, CVector rig
 					pane->m_bShattered = cracked;
 					pane->m_fStep = upLen / float(ysteps);
 					pane->m_bCarGlass = carGlass;
+#ifdef RTGI
+					pane->m_bSettled = false;
+					pane->m_nExpireMs = 0;
+#endif
 					pane->m_bActive = true;
 				}
 			}
@@ -444,6 +508,14 @@ CGlass::RenderEntityInGlass(CEntity *entity)
 	CVector fwdNorm = object->GetForward();
 	fwdNorm.Normalise();
 	uint8 alpha = CalcAlphaWithNormal(&fwdNorm);
+
+#ifdef RTGI
+	// cracked ARTIST glass registers here only for the crack web — its own
+	// atomic still renders (and composites the RT mirror), so skip the
+	// reflection quad or the mirror would double up
+	bool artistCrackOnly =
+		((CSimpleModelInfo*)CModelInfo::GetModelInfo(object->GetModelIndex()))->m_isArtistGlass;
+#endif
 
 	CColModel *col = object->GetColModel();
 	ASSERT(col!=nil);
@@ -499,6 +571,10 @@ CGlass::RenderEntityInGlass(CEntity *entity)
 			TempBufferVerticesStoredShattered += 4;
 		}
 
+#ifdef RTGI
+		if ( artistCrackOnly )
+			return;
+#endif
 		if ( TempBufferIndicesStoredReflection >= TEMPBUFFERINDEXREFLECTIONSIZE-13 || TempBufferVerticesStoredReflection >= TEMPBUFFERVERTREFLECTIONSIZE-5 )
 			RenderReflectionPolys();
 
@@ -678,6 +754,32 @@ CGlass::RenderForRTGIGbuffer(void)
 			RwIm3DRenderIndexedPrimitive(rwPRIMTYPETRILIST, idx, 6);
 			RwIm3DEnd();
 			drawn++;
+		}
+	}
+
+	// falling/resting shards get the glass marker too, so the reflection
+	// pass turns each piece into a tiny mirror — glittering glass rain
+	for ( int32 i = 0; i < NUM_GLASSPANES; i++ )
+	{
+		CFallingGlassPane *pane = &aGlassPanes[i];
+		if ( !pane->m_bActive )
+			continue;
+		RwIm3DVertex verts[3];
+		for ( int32 j = 0; j < 3; j++ )
+		{
+			CVector2D p = CoorsWithTriangle[pane->m_nTriIndex][j] - CentersWithTriangle[pane->m_nTriIndex];
+			CVector v = *pane * CVector(p.x, 0.0f, p.y);
+			RwIm3DVertexSetRGBA(&verts[j], 255, 255, 255, 255);
+			RwIm3DVertexSetU   (&verts[j], 0.0f);
+			RwIm3DVertexSetV   (&verts[j], 0.0f);
+			RwIm3DVertexSetPos (&verts[j], v.x, v.y, v.z);
+		}
+		RwImVertexIndex idx[3];
+		idx[0] = 0; idx[1] = 1; idx[2] = 2;
+		if ( RwIm3DTransform(verts, 3, nil, rwIM3D_VERTEXUV) )
+		{
+			RwIm3DRenderIndexedPrimitive(rwPRIMTYPETRILIST, idx, 3);
+			RwIm3DEnd();
 		}
 	}
 	return drawn;

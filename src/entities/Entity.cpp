@@ -6,6 +6,9 @@
 #include "Timer.h"
 #include "Entity.h"
 #include "Object.h"
+#ifdef RTGI
+#include "extras/rtgi/gbuffer.h"
+#endif
 #include "World.h"
 #include "Camera.h"
 #include "Glass.h"
@@ -725,8 +728,17 @@ CEntity::ModifyMatrixForBannerInWind(void)
 void
 CEntity::PreRenderForGlassWindow(void)
 {
-	if(((CSimpleModelInfo*)CModelInfo::GetModelInfo(m_modelIndex))->m_isArtistGlass)
+	if(((CSimpleModelInfo*)CModelInfo::GetModelInfo(m_modelIndex))->m_isArtistGlass){
+#ifdef RTGI
+		// CS:S-style shatter: a cracked artist pane keeps rendering its
+		// own atomic but registers with CGlass so the crack web overlays
+		// it (vanilla artist glass shows no damage until it bursts)
+		if(RayTracedGI::GlassFxActive() && ((CObject*)this)->bGlassCracked &&
+		   !((CObject*)this)->bGlassBroken)
+			CGlass::AskForObjectToBeRenderedInGlass(this);
+#endif
 		return;
+	}
 	CGlass::AskForObjectToBeRenderedInGlass(this);
 	bIsVisible = false;
 }

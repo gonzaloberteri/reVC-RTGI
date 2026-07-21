@@ -109,7 +109,23 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
   Fresnel from refl.a, vanilla 30-40 m fade via vertex alpha). Cracked
   panes keep the crack overlay; broken panes and falling shards stay
   vanilla. Pane counts ride the glass-mesh telemetry; `glassrefl=` gates
-  everything
+  everything. Indoors, a pane's mirror ray that MISSES (interiors are
+  sealed shells; a miss means the ray slipped through a crack) falls back
+  to a dim horizon-tone ambient instead of sky radiance — the sky
+  fallback painted bright cyan bands across the hotel-lobby transom
+  strips (refl.comp, interior flag in camPos.w)
+- **Glass shatter FX** (`glassfx=`, default on) — CS:S-inspired breakage:
+  double-density shard grid (up to 4x4 cells x 5 triangles; explosions
+  2x2), a 192-piece pool (vanilla's 45 stays the runtime cap when the
+  toggle is off), shards BOUNCE off the ground with damping and then rest
+  for ~4-6 s before expiring into dust, and every falling/resting shard
+  enters the G-buffer with the glass marker so the reflection pass turns
+  it into a tiny mirror — glittering glass rain. Cracked ARTIST panes
+  (vanilla shows no damage until they burst) register with CGlass for
+  the crack-web overlay while their own atomic keeps rendering (the
+  overlay-only path skips the reflection quad so the RT mirror is not
+  doubled). All of it consults `RayTracedGI::GlassFxActive()` so vanilla
+  behavior survives byte-for-byte with the toggle off
   half-res pass marches the view ray (8 jittered steps) tracing sun
   visibility per step; interiors are sealed shells, so panes textured
   with the flat sky fill ("skyblue") are marked as SUN PORTALS in the

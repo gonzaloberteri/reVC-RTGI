@@ -109,7 +109,13 @@ enum Config {
 	NUM_GARAGES = 32,
 	NUM_PROJECTILES = 32,
 
+#ifdef RTGI
+	// CS:S-style shatter spawns far more shards; the runtime pool is still
+	// capped at the vanilla 45 unless the glass-FX toggle is on
+	NUM_GLASSPANES = 192,
+#else
 	NUM_GLASSPANES = 45,
+#endif
 	NUM_GLASSENTITIES = 32,
 	NUM_WATERCANNONS = 3,
 

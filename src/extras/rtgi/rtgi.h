@@ -46,6 +46,7 @@ extern bool gbDenoise;
 extern bool gbReflections;
 extern bool gbReflFilter;	// temporal + spatial filter over the reflection buffer
 extern bool gbGlassRefl;	// deterministic Fresnel mirror on vehicle glass
+extern bool gbGlassFx;	// CS:S-style shatter: dense shards, bounce, crack web
 extern bool gbDumpTex;	// dev: log distinct world texture names
 extern bool gbWaterCaustics;	// animated caustic shimmer on the water surface
 extern float gfEmissiveBoost;	// night windows/neon radiance multiplier
