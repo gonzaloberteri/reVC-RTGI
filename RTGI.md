@@ -242,6 +242,11 @@ tp=230,-1290,12, hotel exterior, vanilla). Refresh when a change
 intentionally improves the look.
 
 Observations to revisit:
+- Per-hour art pass (2026-07-20, `docs/hour_sweep.ps1` — one launch,
+  hours hot-reloaded, RTGI vs enabled=0 pairs at the judge spot): all 8
+  sampled hours (6/9/12/15/18/21/0/3) judged in-family. Midday shade
+  reads deeper than vanilla's flat ambient — that is the GI doing its
+  job at the accepted giblend, not an hour-specific bug. No retune.
 - Photo-mode AO accumulation works (verified 2026-07-20; the old "grain in
   photo stills" note predated temporal AO). Remaining photo-mode artifact:
   the player's idle sway stays inside the 5% depth-reprojection tolerance,
