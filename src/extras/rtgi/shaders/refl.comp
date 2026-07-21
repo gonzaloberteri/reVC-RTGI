@@ -258,7 +258,13 @@ void main()
 		radiance = albedo * (direct + skyAmb)
 			+ unpackAlbedo(rec.emissive) * pc.sunColor.w;
 	}else{
-		radiance = skyRadiance(dir);
+		// camPos.w = 1 inside an interior: the room is a sealed shell, so
+		// a miss means the ray slipped through a crack — sky radiance here
+		// painted bright cyan bands across indoor glass. Use a dim
+		// horizon-tone ambient instead
+		radiance = pc.camPos.w > 0.5
+			? pc.skyBottom.rgb * 0.10
+			: skyRadiance(dir);
 	}
 
 	imageStore(reflImage, ivec2(px), vec4(radiance, refl));

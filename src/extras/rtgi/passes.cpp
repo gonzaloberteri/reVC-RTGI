@@ -19,6 +19,7 @@
 #include "Pools.h"
 #include "Vehicle.h"
 #include "Camera.h"
+#include "Game.h"
 #include "rtgi.h"
 
 #include "shaders/obj/primary_comp.inc"
@@ -1283,6 +1284,10 @@ PassesTraceReflections(VkCommandBuffer cmd, uint32_t frame, bool toRaw)
 
 	ReflPushConstants pc = {};
 	fillCamera(pc.camPos, pc.camRight, pc.camUp, pc.camFwd);
+	// interiors are sealed shells: a mirror ray that misses everything hit
+	// nothing IN THE ROOM, and the sky fallback painted bright cyan bands
+	// across indoor glass (user report, hotel lobby transom strips)
+	pc.camPos[3] = CGame::currArea != AREA_MAIN_MAP ? 1.0f : 0.0f;
 	CVector sunDir = CTimeCycle::GetSunDirection();
 	pc.sunDir[0] = sunDir.x; pc.sunDir[1] = sunDir.y; pc.sunDir[2] = sunDir.z;
 	pc.sunDir[3] = sunDir.z > 0.0f ? 1.0f : 0.0f;
