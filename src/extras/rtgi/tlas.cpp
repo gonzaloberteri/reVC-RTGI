@@ -337,6 +337,8 @@ emitEntity(CEntity *e, VkCommandBuffer cmd)
 		return;
 	if(!IsAreaVisible(e->m_area))
 		return;	// interiors: only the current area traces
+	if(HideMirrorWorld(e))
+		return;	// fake floor-reflection copies must not pollute rays
 	if(e->IsPed()){
 		emitPed(e, cmd);
 		return;

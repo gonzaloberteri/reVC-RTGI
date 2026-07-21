@@ -25,6 +25,9 @@
 #include "Renderer.h"
 #include "custompipes.h"
 #include "Frontend.h"
+#ifdef RTGI
+#include "extras/rtgi/gbuffer.h"
+#endif
 
 bool gbShowPedRoadGroups;
 bool gbShowCarRoadGroups;
@@ -146,6 +149,15 @@ CRenderer::RenderOneNonRoad(CEntity *e)
 	CVehicle *veh;
 	int i;
 	bool resetLights;
+
+#ifdef RTGI
+	// interiors fake their floor reflections with an upside-down copy of
+	// the room under a translucent floor; when the RT mirror computes the
+	// real reflection those copies must not render (pure runtime check —
+	// with RTGI off the vanilla trick is untouched)
+	if(RayTracedGI::HideMirrorWorld(e))
+		return;
+#endif
 
 #ifndef MASTER
 	if(gbShowCollisionPolys){

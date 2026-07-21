@@ -158,7 +158,7 @@ void main()
 		// clearcoat-like: near zero looking straight at the panel (the
 		// hood must stay clean paint), mirror toward grazing
 		refl = clamp(-nr.w * mix(0.08, 2.0, fresnel), 0.0, 0.75);
-	else if(nr.w > 2.5)
+	else if(nr.w > 2.5){
 		// glass pane: smooth dielectric, deterministic mirror shaped by
 		// Fresnel. F0 is boosted well above the physical 0.04 — at 4%
 		// a player square to a storefront cannot see their own
@@ -166,6 +166,12 @@ void main()
 		// ghost image head-on and still ramps to a full mirror at
 		// grazing
 		refl = mix(0.16, 0.95, fresnel);
+		// interior glass FLOORS replace the vanilla mirrored-room trick
+		// (the upside-down copy is hidden while RT is on) — polished
+		// marble mirrors much stronger than a vertical pane head-on
+		if(pc.camPos.w > 0.5 && normal.z > 0.7)
+			refl = mix(0.4, 0.9, fresnel);
+	}
 	else if(nr.w > 1.5){
 		// the sea is always reflective, mirror toward the horizon —
 		// but at night the sky it mirrors is unlit, and the fresnel
@@ -175,6 +181,13 @@ void main()
 		if(pc.sunDir.w <= 0.0)
 			refl *= 0.3;
 	}
+	else if(pc.camPos.w > 0.5 && normal.z > 0.9 && nr.w > 0.01)
+		// interior FLOORS (camPos.w = interior; peds carry nr.w = 0 and
+		// are excluded): the RT mirror replaces the vanilla upside-down
+		// room copy — the hidden trick used by the mall concourse and
+		// hotel lobby. Polished-stone strength, and unlike the baked
+		// copy it reflects Tommy, peds and everything dynamic
+		refl = mix(0.45, 0.9, fresnel);
 	else
 		// wet roads: faint sheen looking straight down, mirror at grazing
 		refl = clamp(pc.wetness * clamp(normal.z, 0.0, 1.0) * nr.w * mix(0.06, 0.85, fresnel), 0.0, 0.75);

@@ -22,6 +22,7 @@
 #include "Timecycle.h"
 #include "ModelInfo.h"
 #include "ModelIndices.h"
+#include "Game.h"
 #include "WaterLevel.h"
 #include "Weather.h"
 #include "Timer.h"
@@ -61,6 +62,7 @@ static int32 u_rtgiWaterCam;
 // stock-matFX pipeline interception (defined below)
 static void matfxRenderCBHook(rw::Atomic *atomic, rw::gl3::InstanceDataHeader *header);
 static void (*gOrigMatfxCB)(rw::Atomic*, rw::gl3::InstanceDataHeader*);
+static bool entityIsMirrorFloor(CEntity *e);
 
 // dev aid (dumptex=1): log each distinct world-mesh texture name once, to
 // mine the vocabulary for name-based material heuristics (VC world models
@@ -238,6 +240,21 @@ meshIsGlass(rw::gl3::InstanceData *inst)
 	return a != 255 && a != 0;
 }
 
+// true while the G-buffer walks an interior with the RT mirror replacing
+// the vanilla mirrored-room trick (set per frame in GbufferRender)
+static bool gbInteriorMirror;
+
+// the mall concourse floor is buried inside the mallint* shell models —
+// its meshes are only identifiable by their floor textures
+static bool
+meshIsMirrorFloor(rw::gl3::InstanceData *inst)
+{
+	rw::Texture *tex = inst->material->texture;
+	if(tex == nil)
+		return false;
+	return strncmp(tex->name, "mallfloor", 9) == 0;
+}
+
 
 // vehicle LOD shells (_vlo/_lo atomics) keep their RENDER flag forever; the
 // forward pass distance-gates them inside their render callbacks, which the
@@ -296,7 +313,9 @@ gbufDrawAtomic(rw::Atomic *atomic, float reflW, float glassReflW, bool envAsGlas
 		// vehicle glass, which enters with the glass marker so the
 		// reflection pass gives panes a deterministic Fresnel mirror
 		float want = reflW;
-		if(meshHasAlpha(inst)){
+		if(gbInteriorMirror && meshIsMirrorFloor(inst))
+			want = 3.0f;
+		else if(meshHasAlpha(inst)){
 			// translucent meshes are REAL glass panes (vehicle
 			// windows, mall storefronts, bar fronts, breakable
 			// shop glass) — baked facade "window" textures are
@@ -345,11 +364,35 @@ GbufferRender(void)
 	glDisable(GL_BLEND);
 	glDisable(GL_CULL_FACE);
 
+	gbInteriorMirror = gbGlassRefl && gbReflections &&
+		CGame::currArea != AREA_MAIN_MAP;
+
 	// world + vehicles + peds from the renderer's visible set
 	for(int32 i = 0; i < CRenderer::GetNoOfVisibleEntities(); i++){
 		CEntity *e = CRenderer::GetVisibleEntity(i);
 		if(e->m_rwObject == nil)
 			continue;
+		// NOTE: mirror-world copies are NOT skipped here — the visible
+		// floor is a translucent overlay the G-buffer drops, and the
+		// copy's flat top surface is the depth/normal backing the
+		// reflection pass needs at floor pixels. They are hidden from
+		// the forward render and the TLAS only.
+		// dev (dumptex=1): log visible building models once each —
+		// mining for interior floor/mirror-copy model names
+		if(gbDumpTex && e->IsBuilding()){
+			enum { MAX_ENT_NAMES = 256 };
+			static char seen[MAX_ENT_NAMES][24];
+			static int numSeen;
+			const char *nm = CModelInfo::GetModelInfo(e->GetModelIndex())->GetModelName();
+			int k;
+			for(k = 0; k < numSeen; k++)
+				if(strncmp(seen[k], nm, 24) == 0)
+					break;
+			if(k == numSeen && numSeen < MAX_ENT_NAMES){
+				strncpy(seen[numSeen++], nm, 24);
+				RtgiLog("RTGI: ent %s\n", nm);
+			}
+		}
 
 		// G-buffer normal.w: < 0 = vehicle base reflectivity (negated),
 		// 0..1.5 = wet-weather reflectivity multiplier, 2 = sea,
@@ -380,6 +423,16 @@ GbufferRender(void)
 			// texture alpha with material alpha 255
 			forceGlass = IsGlass(e->GetModelIndex());
 			envAsGlass = true;
+			// interior mirror floors (mall concourse, hotel lobby):
+			// the whole slab becomes an RT mirror in place of the
+			// hidden upside-down room copy. The reflective overlay
+			// sheets are ALPHA meshes (texture alpha, opaque
+			// material), so they need the forceGlass path too
+			if(gbGlassRefl && gbReflections &&
+			   CGame::currArea != AREA_MAIN_MAP && entityIsMirrorFloor(e)){
+				reflW = 3.0f;
+				forceGlass = true;
+			}
 		}
 
 		if(RwObjectGetType(e->m_rwObject) == rpATOMIC)
@@ -772,6 +825,57 @@ bool
 GlassFxActive(void)
 {
 	return gbRayTracedGI && gbGlassFx;
+}
+
+// interiors fake their floor reflections with an upside-down copy of the
+// room under a translucent floor (the mall ships a pre-mirrored MALLUNDER
+// model + flipped strut/tree instances; the hotel lobby flips instances of
+// its normal models). The copy can never contain dynamic entities — the
+// user's complaint: no Tommy in the mall floor — and its geometry pollutes
+// RT rays from the real room, so while the RT mirror is on it must go.
+// the polished floor slab those hidden copies used to shine through: mark
+// its meshes as glass so the reflection pass computes the REAL mirror
+// (including Tommy and peds, which the baked copy could never show). The
+// floors are plain opaque-material meshes, so a name list is the signal.
+static bool
+entityIsMirrorFloor(CEntity *e)
+{
+	if(!e->IsBuilding())
+		return false;
+	const char *name = CModelInfo::GetModelInfo(e->GetModelIndex())->GetModelName();
+	char low[24];
+	int i;
+	for(i = 0; i < 23 && name[i]; i++)
+		low[i] = (char)tolower(name[i]);
+	low[i] = '\0';
+	return strncmp(low, "midmallflo", 10) == 0 ||	// midmallfloorw + midmallflorre
+		strncmp(low, "mlgrounds", 9) == 0 ||
+		strncmp(low, "mlngrnd", 7) == 0 ||
+		strncmp(low, "ht_mainfloor", 12) == 0 ||
+		strncmp(low, "htl_maintiles", 13) == 0;
+}
+
+bool
+HideMirrorWorld(CEntity *e)
+{
+	if(!gbRayTracedGI || !gbAOEnable || !gbReflections || !gbGlassRefl)
+		return false;
+	if(CGame::currArea == AREA_MAIN_MAP)	// the trick is interior-only
+		return false;
+	if(!e->IsBuilding())
+		return false;
+	// flipped instance = mirror-world copy (nothing legit stands on its head)
+	if(e->GetUp().z < -0.9f)
+		return true;
+	// pre-mirrored models placed below the floor, not flipped
+	const char *name = CModelInfo::GetModelInfo(e->GetModelIndex())->GetModelName();
+	char low[24];
+	int i;
+	for(i = 0; i < 23 && name[i]; i++)
+		low[i] = (char)tolower(name[i]);
+	low[i] = '\0';
+	return strncmp(low, "mallunder", 9) == 0 ||
+		strncmp(low, "malltreereflect", 15) == 0;
 }
 
 // the near-camera wavy/mask water renders as ATOMICS, which bypass the

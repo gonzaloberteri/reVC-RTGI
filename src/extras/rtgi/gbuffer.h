@@ -3,6 +3,7 @@
 #ifdef RTGI
 
 namespace rw { struct Atomic; struct Texture; namespace gl3 { struct InstanceDataHeader; } }
+class CEntity;
 
 namespace RayTracedGI {
 
@@ -64,6 +65,12 @@ void GlassMirrorEnd(void);
 // CS:S-style shatter (dense bouncing shards, crack web on cracked panes).
 // CGlass consults this so the vanilla behavior survives untouched when off.
 bool GlassFxActive(void);
+
+// true for the upside-down mirror-copy geometry interiors use to fake
+// their floor reflections — hidden (render/G-buffer/TLAS) while the RT
+// mirror computes the real reflection; pure runtime check, vanilla when
+// RTGI is off.
+bool HideMirrorWorld(CEntity *e);
 
 }
 

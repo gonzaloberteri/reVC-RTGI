@@ -126,6 +126,23 @@ and runtime-gated behind toggles — without `--with-rtgi` the build is vanilla.
   overlay-only path skips the reflection quad so the RT mirror is not
   doubled). All of it consults `RayTracedGI::GlassFxActive()` so vanilla
   behavior survives byte-for-byte with the toggle off
+- **RT mirror floors** — interiors fake their polished-floor reflections
+  with an upside-down copy of the room under a translucent floor sheet
+  (the mall ships a pre-mirrored MALLUNDER model plus flipped strut/tree
+  instances; the hotel lobby flips instances of its normal models). The
+  baked copy can never show dynamic entities and its geometry pollutes
+  RT rays, so while the mirror is on (`glassrefl` + reflections) those
+  copies are hidden from the FORWARD render and the TLAS
+  (`HideMirrorWorld`: flipped building instances — up.z < -0.9 — in any
+  interior, plus the named mall models) but kept in the G-BUFFER, where
+  their flat tops are the depth/normal backing under the translucent
+  floor overlay the G-buffer drops. The reflection pass then mirrors any
+  interior up-facing pixel (camPos.w interior flag, normal.z > 0.9; peds
+  excluded via their zero marker) at polished-stone strength (F0 0.45) —
+  the composite already mixes refl.a for every world pixel, so Tommy,
+  peds and everything dynamic now show in the mall concourse and hotel
+  lobby floors (verified: food-court signs mirror with reversed text)
+- **Interior light shafts** — inside interiors (area != 0, sun up) a
   half-res pass marches the view ray (8 jittered steps) tracing sun
   visibility per step; interiors are sealed shells, so panes textured
   with the flat sky fill ("skyblue") are marked as SUN PORTALS in the
