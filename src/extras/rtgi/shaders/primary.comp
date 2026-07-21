@@ -55,7 +55,13 @@ void main()
 	uint state = px.x*7919u + px.y*104729u + pc.frame*15485863u;
 	rayQueryEXT rq;
 	rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, 0xFF, pc.camPos.xyz, 0.1, dir, 3000.0);
+	// iteration guard: see ao.comp — degenerate rays must not TDR the GPU
+	uint iter_ = 0u;
 	while(rayQueryProceedEXT(rq)){
+		if(++iter_ > 512u){
+			rayQueryTerminateEXT(rq);
+			break;
+		}
 		if(rayQueryGetIntersectionTypeEXT(rq, false) == gl_RayQueryCandidateIntersectionTriangleEXT
 		   && hashColor(state++).x < 0.45)
 			rayQueryConfirmIntersectionEXT(rq);

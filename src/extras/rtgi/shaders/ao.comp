@@ -41,13 +41,21 @@ float rnd(inout uint state)
 	return float(pcg(state)) / 4294967296.0;
 }
 
-// non-opaque (alpha-tested foliage) candidates pass through stochastically
+// non-opaque (alpha-tested foliage) candidates pass through stochastically.
+// The iteration guard bails out of pathological candidate streams — rays
+// starting inside dense solid geometry (bad teleport, camera clipped into
+// a mesh) can otherwise stall the GPU into a device-lost TDR (0xC0000409)
 #define TRAVERSE(rq) \
+	{ uint iter_ = 0u; \
 	while(rayQueryProceedEXT(rq)){ \
+		if(++iter_ > 512u){ \
+			rayQueryTerminateEXT(rq); \
+			break; \
+		} \
 		if(rayQueryGetIntersectionTypeEXT(rq, false) == gl_RayQueryCandidateIntersectionTriangleEXT \
 		   && rnd(state) < 0.45) \
 			rayQueryConfirmIntersectionEXT(rq); \
-	}
+	} }
 
 vec3 cosineHemisphere(vec3 n, inout uint state)
 {

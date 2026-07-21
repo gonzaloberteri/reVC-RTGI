@@ -52,12 +52,18 @@ float rnd(inout uint state)
 	return float(pcg(state)) / 4294967296.0;
 }
 
+// iteration guard: see ao.comp — degenerate rays must not TDR the GPU
 #define TRAVERSE(rq) \
+	{ uint iter_ = 0u; \
 	while(rayQueryProceedEXT(rq)){ \
+		if(++iter_ > 512u){ \
+			rayQueryTerminateEXT(rq); \
+			break; \
+		} \
 		if(rayQueryGetIntersectionTypeEXT(rq, false) == gl_RayQueryCandidateIntersectionTriangleEXT \
 		   && rnd(state) < 0.45) \
 			rayQueryConfirmIntersectionEXT(rq); \
-	}
+	} }
 
 void main()
 {

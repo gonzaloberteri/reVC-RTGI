@@ -266,10 +266,15 @@ Observations to revisit:
   ~10 ms. MINIMIZED runs report inflated numbers (GPU power state) —
   compare like with like; the capture agent's gif mode restores the
   window off-screen for honest measurements.
-- 0xc0000409 fullscreen-rain crash: did NOT reproduce in a 9-minute
-  2560x1440 windowed rain soak (stable timings throughout). Suspect
-  exclusive-fullscreen swapchain interaction; needs a real fullscreen
-  session to chase further.
+- 0xc0000409 crash: reproduced ONCE (windowed 1080p) right after
+  teleporting inside the mall's solid roof mass — "frame fence wait
+  failed (2)" (VK_TIMEOUT, i.e. a GPU hang/TDR) followed by the crash;
+  the same teleport then survived a retry, so the repro is
+  non-deterministic. All traversal loops now carry a 512-candidate
+  iteration guard (rayQueryTerminateEXT bail-out) so a pathological
+  candidate stream cannot stall the GPU — defensive hardening, not a
+  proven fix. The older fullscreen-rain sighting may be the same class.
+  Did NOT reproduce in a 9-minute 2560x1440 windowed rain soak.
 - Texture cache reached 975/1024 after ~10 min of streaming; long play
   sessions will hit the cap and fall back to mean colors — consider 2048
   or LRU eviction via a raster-destructor hook.

@@ -112,12 +112,18 @@ float candidateAlpha(rayQueryEXT rq)
 	return a;
 }
 
+// iteration guard: see ao.comp — degenerate rays must not TDR the GPU
 #define TRAVERSE(rq) \
+	{ uint iter_ = 0u; \
 	while(rayQueryProceedEXT(rq)){ \
+		if(++iter_ > 512u){ \
+			rayQueryTerminateEXT(rq); \
+			break; \
+		} \
 		if(rayQueryGetIntersectionTypeEXT(rq, false) == gl_RayQueryCandidateIntersectionTriangleEXT \
 		   && rnd(state) < candidateAlpha(rq)) \
 			rayQueryConfirmIntersectionEXT(rq); \
-	}
+	} }
 
 bool shadowRayHit(vec3 origin, vec3 dir, inout uint state)
 {
