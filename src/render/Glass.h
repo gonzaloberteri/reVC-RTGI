@@ -17,10 +17,11 @@ public:
 	bool m_bShattered;
 	bool m_bCarGlass;
 #ifdef RTGI
-	// CS:S-style shatter: shards bounce once and then rest on the ground
-	// for a while before expiring (m_nTimer keeps its vanilla meaning as
-	// the movement-start/fade-in base, so the rest deadline is separate)
+	// CS:S-style shatter: shards bounce at most twice and then rest on
+	// the ground for a while before expiring (m_nTimer keeps its vanilla
+	// meaning as the movement-start/fade-in base)
 	bool m_bSettled;
+	uint8 m_nBounces;
 	uint32 m_nExpireMs;
 #endif
 

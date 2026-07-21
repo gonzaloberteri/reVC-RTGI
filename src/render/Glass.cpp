@@ -83,6 +83,23 @@ int32 TempBufferVerticesStoredShattered  = 0;
 int32 TempBufferIndicesStoredReflection  = 0;
 int32 TempBufferVerticesStoredReflection = 0;
 
+#ifdef RTGI
+// deterministic per-piece vertex jitter: the 5-triangle template tiles the
+// pane cell in clean uniform wedges, which reads as paper confetti — CS:S
+// shards are jagged and irregular. Seeded by the piece's pool slot so the
+// shape is stable frame to frame and identical between the visual draw
+// and the G-buffer mirror emission.
+static inline float
+ShardJitter(uint32 seed, uint32 k)
+{
+	uint32 h = (seed*3u + k) * 2654435761u;
+	h ^= h >> 15;
+	h *= 2246822519u;
+	h ^= h >> 13;
+	return (float(h & 0xFFFFu) / 65535.0f - 0.5f) * 0.36f;
+}
+#endif
+
 void
 CFallingGlassPane::Update(void)
 {
@@ -120,14 +137,16 @@ CFallingGlassPane::Update(void)
 			}
 			if ( GetPosition().z < m_fGroundZ )
 			{
-				if ( m_vecMoveSpeed.z < -0.08f )
+				// at most two soft bounces, then rest — endless clinking
+				// pinball shards read as popcorn, not glass
+				if ( m_nBounces < 2 && m_vecMoveSpeed.z < -0.15f )
 				{
-					// bounce: damped reflection + a click of sound
+					m_nBounces++;
 					GetPosition().z = m_fGroundZ + 0.01f;
-					m_vecMoveSpeed.z = -m_vecMoveSpeed.z * 0.4f;
-					m_vecMoveSpeed.x *= 0.65f;
-					m_vecMoveSpeed.y *= 0.65f;
-					m_vecTurn *= 0.5f;
+					m_vecMoveSpeed.z = -m_vecMoveSpeed.z * 0.25f;
+					m_vecMoveSpeed.x *= 0.5f;
+					m_vecMoveSpeed.y *= 0.5f;
+					m_vecTurn *= 0.4f;
 					PlayOneShotScriptObject(SCRIPT_SOUND_GLASS_LIGHT_BREAK,
 						CVector(GetPosition().x, GetPosition().y, m_fGroundZ));
 				}
@@ -222,6 +241,15 @@ CFallingGlassPane::Render(void)
 	CVector2D p0 = CoorsWithTriangle[m_nTriIndex][0] - CentersWithTriangle[m_nTriIndex];
 	CVector2D p1 = CoorsWithTriangle[m_nTriIndex][1] - CentersWithTriangle[m_nTriIndex];
 	CVector2D p2 = CoorsWithTriangle[m_nTriIndex][2] - CentersWithTriangle[m_nTriIndex];
+#ifdef RTGI
+	if ( RayTracedGI::GlassFxActive() )
+	{
+		uint32 seed = (uint32)(uintptr)this >> 4;
+		p0.x += ShardJitter(seed, 0); p0.y += ShardJitter(seed, 1);
+		p1.x += ShardJitter(seed, 2); p1.y += ShardJitter(seed, 3);
+		p2.x += ShardJitter(seed, 4); p2.y += ShardJitter(seed, 5);
+	}
+#endif
 	CVector v0 = *this * CVector(p0.x, 0.0f, p0.y);
 	CVector v1 = *this * CVector(p1.x, 0.0f, p1.y);
 	CVector v2 = *this * CVector(p2.x, 0.0f, p2.y);
@@ -469,6 +497,7 @@ CGlass::GeneratePanesForWindow(uint32 type, CVector pos, CVector up, CVector rig
 					pane->m_bCarGlass = carGlass;
 #ifdef RTGI
 					pane->m_bSettled = false;
+					pane->m_nBounces = 0;
 					pane->m_nExpireMs = 0;
 #endif
 					pane->m_bActive = true;
@@ -765,9 +794,15 @@ CGlass::RenderForRTGIGbuffer(void)
 		if ( !pane->m_bActive )
 			continue;
 		RwIm3DVertex verts[3];
+		uint32 seed = (uint32)(uintptr)pane >> 4;
 		for ( int32 j = 0; j < 3; j++ )
 		{
 			CVector2D p = CoorsWithTriangle[pane->m_nTriIndex][j] - CentersWithTriangle[pane->m_nTriIndex];
+			if ( RayTracedGI::GlassFxActive() )
+			{
+				p.x += ShardJitter(seed, j*2);
+				p.y += ShardJitter(seed, j*2 + 1);
+			}
 			CVector v = *pane * CVector(p.x, 0.0f, p.y);
 			RwIm3DVertexSetRGBA(&verts[j], 255, 255, 255, 255);
 			RwIm3DVertexSetU   (&verts[j], 0.0f);
